@@ -17,6 +17,7 @@ import { db, DBInvite } from '../db';
  */
 
 export const ALPHANUMERIC_ALPHABET_32 = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+export const INVITE_ALPHABET = ALPHANUMERIC_ALPHABET_32;
 
 // Fallback legacy support alphabet for existing invite tokens if encountered
 export const LEGACY_INVITE_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz#$@!%&*-';

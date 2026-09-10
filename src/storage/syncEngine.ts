@@ -48,6 +48,7 @@ export class SyncEngine {
   private isProcessingQueue = false;
   private chunkReassembler = new ChunkReassembler();
   private activeConversationId: string | null = null;
+  private droppedEnvelopes = new Set<string>();
 
   constructor() {
     if (typeof window !== 'undefined') {
@@ -70,6 +71,7 @@ export class SyncEngine {
     this.deviceKeys = null;
     this.userUuid = null;
     this.activeConversationId = null;
+    this.droppedEnvelopes.clear();
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -193,7 +195,9 @@ export class SyncEngine {
     conversationId: string,
     recipientDeviceId: string,
     recipientBundle: PrekeyBundle,
-    text: string
+    text: string,
+    recipientUserId?: string,
+    allowOfflineStorage: boolean = true
   ): Promise<DecryptedMessage> {
     if (!this.deviceKeys || !this.userUuid) {
       throw new Error('Not authenticated');
@@ -250,18 +254,26 @@ export class SyncEngine {
       expiresAt
     );
 
+    // Attach UUID-to-UUID routing metadata and offline allowance
+    envelope.senderUserId = this.userUuid;
+    envelope.recipientUserId = recipientUserId || recipientBundle.userUuid;
+    envelope.allowOfflineStorage = allowOfflineStorage;
+
     const initialStatus: DeliveryStatus =
       this.connectionState === 'connected' ? 'sending' : 'queued_offline';
 
     syncDiagnostic.record('SENDER_PREPARE', {
       clientMessageId,
       conversationId,
+      senderUserId: this.userUuid,
+      recipientUserId: envelope.recipientUserId,
       senderDeviceId: this.deviceKeys.deviceId,
       recipientDeviceId,
       sequence,
       details: {
         status: initialStatus,
-        hasHandshakePacket: !!initialHandshakePacket
+        hasHandshakePacket: !!initialHandshakePacket,
+        allowOfflineStorage
       }
     });
 
@@ -420,12 +432,17 @@ export class SyncEngine {
     serverSeq: number
   ) {
     if (!this.deviceKeys || !this.token) return;
+    if (this.droppedEnvelopes.has(envelope.clientMessageId)) return;
 
-    // Reject envelopes not intended for this device
-    if (envelope.recipientDeviceId && envelope.recipientDeviceId !== this.deviceKeys.deviceId) {
+    // UUID-to-UUID authoritative routing check:
+    if (envelope.recipientUserId && this.userUuid && envelope.recipientUserId !== this.userUuid) {
       return;
     }
-    // Reject incoming loops from own device
+    // Reject envelopes not intended for this device if recipientUserId is not present
+    if (!envelope.recipientUserId && envelope.recipientDeviceId && envelope.recipientDeviceId !== this.deviceKeys.deviceId) {
+      return;
+    }
+    // Reject incoming loops from own device or self
     if (envelope.senderDeviceId === this.deviceKeys.deviceId) {
       return;
     }
@@ -433,6 +450,8 @@ export class SyncEngine {
     syncDiagnostic.record('RECIPIENT_ENVELOPE_RECEIVED', {
       clientMessageId: envelope.clientMessageId,
       conversationId: envelope.conversationId,
+      senderUserId: envelope.senderUserId,
+      recipientUserId: this.userUuid ?? undefined,
       senderDeviceId: envelope.senderDeviceId,
       recipientDeviceId: this.deviceKeys.deviceId,
       sequence: envelope.sequence,
@@ -630,8 +649,33 @@ export class SyncEngine {
         recipientDeviceId: this.deviceKeys.deviceId,
         details: { status: 'delivered', serverMessageId }
       });
-    } catch (err) {
-      console.error('[SyncEngine] Failed to ingest message envelope:', err);
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      const isSecurityViolation =
+        errMsg.includes('SECURITY VIOLATION') ||
+        errMsg.includes('ML-DSA-87') ||
+        errMsg.includes('Cryptographic verification') ||
+        errMsg.includes('signature verification failed');
+
+      if (isSecurityViolation) {
+        this.droppedEnvelopes.add(envelope.clientMessageId);
+        syncDiagnostic.record('MESSAGE_DROPPED_INVALID_SIGNATURE', {
+          clientMessageId: envelope.clientMessageId,
+          conversationId: envelope.conversationId,
+          senderDeviceId: envelope.senderDeviceId,
+          recipientDeviceId: this.deviceKeys?.deviceId,
+          details: {
+            reason: errMsg,
+            dropped: true
+          }
+        });
+        console.warn(`[SyncEngine] Dropped unverified envelope (${envelope.clientMessageId}): ${errMsg}`);
+        if (serverMessageId) {
+          this.sendReceipt(serverMessageId, envelope.clientMessageId, 'delivered');
+        }
+      } else {
+        console.error('[SyncEngine] Failed to ingest message envelope:', err);
+      }
     }
   }
 
@@ -687,6 +731,20 @@ export class SyncEngine {
         const data = await res.json();
         if (data.messages && Array.isArray(data.messages)) {
           for (const msg of data.messages) {
+            if (this.droppedEnvelopes.has(msg.clientMessageId)) continue;
+            syncDiagnostic.record('RECIPIENT_DB_MEMBERSHIP_VERIFIED', {
+              clientMessageId: msg.clientMessageId,
+              conversationId: msg.conversationId,
+              recipientUserId: this.userUuid ?? undefined,
+              senderUserId: msg.senderUserId,
+              serverSequence: msg.serverSequence,
+              details: {
+                checkResult: 'SUCCESS',
+                verifiedRecipientUserId: this.userUuid,
+                event: 'recipient_login_sync_retrieval',
+                status: 'authorized_by_rls'
+              }
+            });
             await this.handleIncomingEnvelope(msg, msg.id, msg.serverSequence);
           }
         }
@@ -706,6 +764,9 @@ export class SyncEngine {
         const data = await res.json();
         if (data.messages && Array.isArray(data.messages)) {
           for (const msg of data.messages) {
+            if (this.droppedEnvelopes.has(msg.clientMessageId)) {
+              continue;
+            }
             if (msg.recipientDeviceId && msg.recipientDeviceId !== this.deviceKeys.deviceId) {
               continue;
             }

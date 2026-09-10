@@ -5,6 +5,7 @@ import {
   EncryptedEnvelope
 } from '../crypto/types';
 import { DeviceKeyBundle } from '../crypto/keys';
+import { createAtRestDriver, isEncryptedAtRest, AtRestStorageDriver } from '../crypto/atRest';
 
 const DB_VERSION = 2;
 
@@ -34,6 +35,7 @@ class ClientStorage {
   private activeUserId: string | null = null;
   private dbInstance: IDBDatabase | null = null;
   private dbOpeningPromise: Promise<IDBDatabase | null> | null = null;
+  private atRestDriver: AtRestStorageDriver | null = null;
 
   private memoryStore = {
     deviceKeys: new Map<string, DeviceKeyBundle>(),
@@ -45,13 +47,14 @@ class ClientStorage {
   };
 
   /**
-   * Initializes user-scoped storage. Each user gets their own dedicated, isolated IndexedDB
-   * database named `ychat_client_storage_${userId}`. This enforces strict participant isolation
-   * and prevents any data from leaking across user sessions.
+   * Initializes user-scoped storage and Domain 2 AES-256-GCM at-rest encryption.
+   * Each user gets their own dedicated, isolated IndexedDB database named `ychat_client_storage_${userId}`.
+   * The local storage driver derives a wrapping key via WebCrypto (or OS keychain / Android Keystore)
+   * to wrap the AES-256-GCM data encryption key protecting decrypted caches and private keys at rest.
    */
-  async initUserScope(userId: string): Promise<void> {
-    // If already scoped to this user and connection is alive or opening, do not close
-    if (this.activeUserId === userId) {
+  async initUserScope(userId: string, unlockSecret?: string): Promise<void> {
+    // If already scoped to this user and connection is alive, reuse
+    if (this.activeUserId === userId && this.atRestDriver?.isUnlocked()) {
       if (this.dbInstance) return;
       if (this.dbOpeningPromise) {
         await this.dbOpeningPromise;
@@ -71,11 +74,21 @@ class ClientStorage {
 
     this.clearMemoryStore();
     this.activeUserId = userId;
+
+    // Initialize Domain 2 At-Rest Storage Driver
+    try {
+      this.atRestDriver = createAtRestDriver();
+      await this.atRestDriver.initialize(userId, unlockSecret);
+    } catch (err) {
+      console.error('Failed to initialize Domain 2 at-rest encryption driver:', err);
+    }
+
     await this.getDB(true);
   }
 
   /**
-   * Resets active session credentials and purges all in-memory caches upon sign-out.
+   * Resets active session credentials, locks the at-rest encryption driver,
+   * and purges all in-memory caches upon sign-out.
    */
   clearUserScope(): void {
     const previousDb = this.dbInstance;
@@ -83,11 +96,19 @@ class ClientStorage {
     this.dbOpeningPromise = null;
     this.activeUserId = null;
     this.clearMemoryStore();
+    if (this.atRestDriver) {
+      this.atRestDriver.lock();
+      this.atRestDriver = null;
+    }
     if (previousDb) {
       try {
         previousDb.close();
       } catch {}
     }
+  }
+
+  getAtRestDriver(): AtRestStorageDriver | null {
+    return this.atRestDriver;
   }
 
   getActiveUserId(): string | null {
@@ -263,13 +284,27 @@ class ClientStorage {
   }
 
   // ==========================================
-  // Device Keys Storage
+  // Device Keys Storage (Encrypted at rest with AES-256-GCM)
   // ==========================================
   async saveDeviceKeys(bundle: DeviceKeyBundle): Promise<void> {
     this.memoryStore.deviceKeys.set(bundle.deviceId, bundle);
+
+    let recordToStore: any = bundle;
+    if (this.atRestDriver?.isUnlocked()) {
+      try {
+        const encrypted = await this.atRestDriver.encryptPayload(bundle);
+        recordToStore = {
+          deviceId: bundle.deviceId,
+          ...encrypted
+        };
+      } catch (err) {
+        console.warn('Failed to encrypt device keys at rest, storing fallback:', err);
+      }
+    }
+
     await this.runTransaction('deviceKeys', 'readwrite', (store) => {
       return new Promise<void>((resolve, reject) => {
-        const req = store.put(bundle);
+        const req = store.put(recordToStore);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
       });
@@ -281,7 +316,7 @@ class ClientStorage {
     if (mem) return mem;
 
     const result = await this.runTransaction('deviceKeys', 'readonly', (store) => {
-      return new Promise<DeviceKeyBundle | null>((resolve) => {
+      return new Promise<any>((resolve) => {
         const req = store.get(deviceId);
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
@@ -289,8 +324,17 @@ class ClientStorage {
     });
 
     if (result) {
-      this.memoryStore.deviceKeys.set(result.deviceId, result);
-      return result;
+      let resolved: DeviceKeyBundle = result;
+      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
+        try {
+          resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
+        } catch (err) {
+          console.error('Failed to decrypt device keys with at-rest key:', err);
+          return null;
+        }
+      }
+      this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
+      return resolved;
     }
     return null;
   }
@@ -301,7 +345,7 @@ class ClientStorage {
     }
 
     const result = await this.runTransaction('deviceKeys', 'readonly', (store) => {
-      return new Promise<DeviceKeyBundle | null>((resolve) => {
+      return new Promise<any>((resolve) => {
         const req = store.getAll(undefined, 1);
         req.onsuccess = () => resolve(req.result?.[0] || null);
         req.onerror = () => resolve(null);
@@ -309,20 +353,43 @@ class ClientStorage {
     });
 
     if (result) {
-      this.memoryStore.deviceKeys.set(result.deviceId, result);
-      return result;
+      let resolved: DeviceKeyBundle = result;
+      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
+        try {
+          resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
+        } catch (err) {
+          console.error('Failed to decrypt device keys with at-rest key:', err);
+          return null;
+        }
+      }
+      this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
+      return resolved;
     }
     return null;
   }
 
   // ==========================================
-  // Ratchet Session Storage
+  // Ratchet Session Storage (Encrypted at rest with AES-256-GCM)
   // ==========================================
   async saveSession(session: RatchetSession): Promise<void> {
     this.memoryStore.sessions.set(session.sessionId, session);
+
+    let recordToStore: any = session;
+    if (this.atRestDriver?.isUnlocked()) {
+      try {
+        const encrypted = await this.atRestDriver.encryptPayload(session);
+        recordToStore = {
+          sessionId: session.sessionId,
+          ...encrypted
+        };
+      } catch (err) {
+        console.warn('Failed to encrypt session at rest, storing fallback:', err);
+      }
+    }
+
     await this.runTransaction('sessions', 'readwrite', (store) => {
       return new Promise<void>((resolve, reject) => {
-        const req = store.put(session);
+        const req = store.put(recordToStore);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
       });
@@ -334,7 +401,7 @@ class ClientStorage {
     if (mem) return mem;
 
     const result = await this.runTransaction('sessions', 'readonly', (store) => {
-      return new Promise<RatchetSession | null>((resolve) => {
+      return new Promise<any>((resolve) => {
         const req = store.get(sessionId);
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
@@ -342,8 +409,17 @@ class ClientStorage {
     });
 
     if (result) {
-      this.memoryStore.sessions.set(result.sessionId, result);
-      return result;
+      let resolved: RatchetSession = result;
+      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
+        try {
+          resolved = await this.atRestDriver.decryptPayload<RatchetSession>(result);
+        } catch (err) {
+          console.error('Failed to decrypt session with at-rest key:', err);
+          return null;
+        }
+      }
+      this.memoryStore.sessions.set(resolved.sessionId, resolved);
+      return resolved;
     }
     return null;
   }
@@ -437,14 +513,31 @@ class ClientStorage {
   }
 
   // ==========================================
-  // Messages Storage
+  // Messages Storage (Encrypted at rest with AES-256-GCM)
   // ==========================================
   async saveMessage(msg: DecryptedMessage): Promise<void> {
     this.memoryStore.messages.set(msg.clientMessageId, msg);
 
+    let recordToStore: any = msg;
+    if (this.atRestDriver?.isUnlocked()) {
+      try {
+        const encrypted = await this.atRestDriver.encryptPayload(msg);
+        recordToStore = {
+          clientMessageId: msg.clientMessageId,
+          conversationId: msg.conversationId,
+          timestamp: msg.timestamp,
+          serverSequence: msg.serverSequence,
+          status: msg.status,
+          ...encrypted
+        };
+      } catch (err) {
+        console.warn('Failed to encrypt message at rest, storing fallback:', err);
+      }
+    }
+
     await this.runTransaction('messages', 'readwrite', (store) => {
       return new Promise<void>((resolve, reject) => {
-        const req = store.put(msg);
+        const req = store.put(recordToStore);
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
       });
@@ -455,13 +548,28 @@ class ClientStorage {
     const mem = this.memoryStore.messages.get(clientMessageId);
     if (mem) return mem;
 
-    return await this.runTransaction('messages', 'readonly', (store) => {
-      return new Promise<DecryptedMessage | null>((resolve) => {
+    const result = await this.runTransaction('messages', 'readonly', (store) => {
+      return new Promise<any>((resolve) => {
         const req = store.get(clientMessageId);
         req.onsuccess = () => resolve(req.result || null);
         req.onerror = () => resolve(null);
       });
     });
+
+    if (result) {
+      let resolved: DecryptedMessage = result;
+      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
+        try {
+          resolved = await this.atRestDriver.decryptPayload<DecryptedMessage>(result);
+        } catch (err) {
+          console.error('Failed to decrypt message at rest:', err);
+          return null;
+        }
+      }
+      this.memoryStore.messages.set(resolved.clientMessageId, resolved);
+      return resolved;
+    }
+    return null;
   }
 
   async getMessagesForConversation(convId: string): Promise<DecryptedMessage[]> {
@@ -473,11 +581,11 @@ class ClientStorage {
     };
 
     const dbResult = await this.runTransaction('messages', 'readonly', (store) => {
-      return new Promise<DecryptedMessage[]>((resolve) => {
+      return new Promise<any[]>((resolve) => {
         try {
           const index = store.index('conversationId');
           const req = index.getAll(convId);
-          req.onsuccess = () => resolve((req.result || []) as DecryptedMessage[]);
+          req.onsuccess = () => resolve((req.result || []) as any[]);
           req.onerror = () => resolve([]);
         } catch {
           resolve([]);
@@ -486,9 +594,23 @@ class ClientStorage {
     });
 
     if (dbResult && dbResult.length > 0) {
-      dbResult.sort(sortFn);
-      dbResult.forEach(m => this.memoryStore.messages.set(m.clientMessageId, m));
-      return dbResult;
+      const decryptedList: DecryptedMessage[] = [];
+      for (const raw of dbResult) {
+        if (isEncryptedAtRest(raw) && this.atRestDriver?.isUnlocked()) {
+          try {
+            const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(raw);
+            decryptedList.push(dec);
+          } catch (err) {
+            console.warn('Failed to decrypt at-rest message record:', err);
+          }
+        } else {
+          decryptedList.push(raw as DecryptedMessage);
+        }
+      }
+
+      decryptedList.sort(sortFn);
+      decryptedList.forEach(m => this.memoryStore.messages.set(m.clientMessageId, m));
+      return decryptedList;
     }
 
     return Array.from(this.memoryStore.messages.values())
@@ -505,10 +627,27 @@ class ClientStorage {
     await this.runTransaction('messages', 'readwrite', (store) => {
       return new Promise<void>((resolve) => {
         const req = store.get(clientMessageId);
-        req.onsuccess = () => {
+        req.onsuccess = async () => {
           if (req.result) {
-            req.result.status = status;
-            store.put(req.result);
+            let record = req.result;
+            if (isEncryptedAtRest(record) && this.atRestDriver?.isUnlocked()) {
+              try {
+                const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(record);
+                dec.status = status;
+                const encrypted = await this.atRestDriver.encryptPayload(dec);
+                record = {
+                  clientMessageId: dec.clientMessageId,
+                  conversationId: dec.conversationId,
+                  timestamp: dec.timestamp,
+                  serverSequence: dec.serverSequence,
+                  status,
+                  ...encrypted
+                };
+              } catch {}
+            } else {
+              record.status = status;
+            }
+            store.put(record);
           }
           resolve();
         };
@@ -552,14 +691,29 @@ class ClientStorage {
   }
 
   // ==========================================
-  // Sync Queue Storage
+  // Sync Queue Storage (Encrypted at rest with AES-256-GCM)
   // ==========================================
   async enqueueMessage(item: QueuedMessage): Promise<void> {
     this.memoryStore.syncQueue.set(item.clientMessageId, item);
 
+    let recordToStore: any = item;
+    if (this.atRestDriver?.isUnlocked()) {
+      try {
+        const encrypted = await this.atRestDriver.encryptPayload(item);
+        recordToStore = {
+          clientMessageId: item.clientMessageId,
+          conversationId: item.conversationId,
+          timestamp: item.timestamp,
+          ...encrypted
+        };
+      } catch (err) {
+        console.warn('Failed to encrypt queued message at rest:', err);
+      }
+    }
+
     await this.runTransaction('syncQueue', 'readwrite', (store) => {
       return new Promise<void>((resolve) => {
-        const req = store.put(item);
+        const req = store.put(recordToStore);
         req.onsuccess = () => resolve();
         req.onerror = () => resolve();
       });
@@ -580,15 +734,28 @@ class ClientStorage {
 
   async getSyncQueue(): Promise<QueuedMessage[]> {
     const dbResult = await this.runTransaction('syncQueue', 'readonly', (store) => {
-      return new Promise<QueuedMessage[]>((resolve) => {
+      return new Promise<any[]>((resolve) => {
         const req = store.getAll();
-        req.onsuccess = () => resolve((req.result || []) as QueuedMessage[]);
+        req.onsuccess = () => resolve((req.result || []) as any[]);
         req.onerror = () => resolve([]);
       });
     });
 
     if (dbResult && dbResult.length > 0) {
-      return dbResult;
+      const decryptedList: QueuedMessage[] = [];
+      for (const raw of dbResult) {
+        if (isEncryptedAtRest(raw) && this.atRestDriver?.isUnlocked()) {
+          try {
+            const dec = await this.atRestDriver.decryptPayload<QueuedMessage>(raw);
+            decryptedList.push(dec);
+          } catch (err) {
+            console.warn('Failed to decrypt queued message at rest:', err);
+          }
+        } else {
+          decryptedList.push(raw as QueuedMessage);
+        }
+      }
+      return decryptedList;
     }
     return Array.from(this.memoryStore.syncQueue.values());
   }

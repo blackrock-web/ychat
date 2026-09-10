@@ -1,0 +1,16 @@
+[
+  {
+    "id": "95f7b441-612c-4387-ab6a-1848324b7501",
+    "email": "alice@ychat.local",
+    "passwordHash": "06f51c543b4a91a6daf9f377271554cc:3cdca5c1ecc6d2c1a83ea04d5369fef17519163c3833cee0859a26ef9538bf16",
+    "createdAt": "2026-09-10T21:05:39.666Z",
+    "confirmedAt": "2026-09-10T21:05:39.666Z"
+  },
+  {
+    "id": "c234f4cb-11aa-4fe0-870c-611f6b536543",
+    "email": "bob@ychat.local",
+    "passwordHash": "8565a2d7fc147864a311c9f2f43d2a87:98491c6cb9cca92faefef072b8a74d824b8f402e56fadf52f57663459da129f8",
+    "createdAt": "2026-09-10T21:05:40.187Z",
+    "confirmedAt": "2026-09-10T21:05:40.187Z"
+  }
+]

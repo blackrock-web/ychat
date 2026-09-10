@@ -9,7 +9,90 @@ YChat implements a zero-knowledge, hybrid post-quantum end-to-end encryption (E2
 
 ---
 
-## 2. Key Hierarchy & Cryptographic Primitives
+## 2. Two Separate Encryption Domains
+
+To eliminate any ambiguity for security reviewers and auditors, YChat defines and strictly enforces **two separate, decoupled encryption domains**. These domains have completely separate threat models, separate cryptographic primitives, separate key lifecycles, and completely isolated key material.
+
+```
++===================================================================================================+
+|                                    YCHAT ENCRYPTION DOMAINS                                       |
++===================================================================================================+
+|                                                                                                   |
+|  [DOMAIN 1: MESSAGE TRANSPORT (E2EE)]                                                             |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | Sender Device                                                                               |  |
+|  |                                                                                             |  |
+|  |  X25519 + ML-KEM-1024 Hybrid Agreement                                                      |  |
+|  |               |                                                                             |  |
+|  |         HKDF-SHA3-512                                                                       |  |
+|  |               |                                                                             |  |
+|  |  Session / Conversation / Message Key Hierarchy                                             |  |
+|  |               |                                                                             |  |
+|  |     ChaCha20-Poly1305 AEAD                                                                  |  |
+|  |               |                                                                             |  |
+|  |       ML-DSA-87 Signature                                                                    |  |
+|  |               |                                                                             |  |
+|  |       Envelope Chunking                                                                     |  |
+|  |               |                                                                             |  |
+|  |            TLS 1.3 (Infrastructure Transport) ---------------------> Server Relay (Opaque)  |  |
+|  +---------------------------------------------------------------------------------------------+  |
+|                                                                                                   |
+|  [DOMAIN 2: LOCAL AT-REST ENCRYPTION]                                                             |
+|  +---------------------------------------------------------------------------------------------+  |
+|  | Client Device Local Storage (IndexedDB / SQLite / Key Material)                             |  |
+|  |                                                                                             |  |
+|  |  AES-256-GCM (Payload & Key Cache Cipher)                                                   |  |
+|  |         ^                                                                                   |  |
+|  |         | Encrypted / Decrypted locally via device at-rest storage key                       |  |
+|  |         |                                                                                   |  |
+|  |  Hardware Keystore & Enclave Wrapping:                                                      |  |
+|  |    * Web:     WebCrypto subtle.wrapKey (non-extractable key)                                |  |
+|  |    * Android: Android Keystore / Hardware-backed TEE / StrongBox                            |  |
+|  |    * Desktop: OS Keychain (macOS) / DPAPI (Windows) / libsecret (Linux)                     |  |
+|  |                                                                                             |  |
+|  |  STRICT ISOLATION GUARANTEE:                                                                |  |
+|  |  - Key NEVER leaves the client device.                                                      |  |
+|  |  - Key is NEVER derived from or combined with Domain 1 transport keys.                     |  |
+|  +---------------------------------------------------------------------------------------------+  |
++===================================================================================================+
+```
+
+### Domain 1: Message Transport (End-to-End Encryption)
+- **Status**: Implemented protocol pipeline — core E2EE specification (do not alter).
+- **Cryptographic Pipeline**:
+  $$\text{X25519} + \text{ML-KEM-1024} \longrightarrow \text{HKDF-SHA3-512} \longrightarrow \text{Session / Conv / Message Keys} \longrightarrow \text{ChaCha20-Poly1305 AEAD} \longrightarrow \text{ML-DSA-87 Signature} \longrightarrow \text{Chunking} \longrightarrow \text{TLS 1.3}$$
+- **Operational Scope**: In-flight message payloads transmitted over untrusted networks and relayed via the YChat server.
+- **Key Properties**:
+  - Ephemeral, ratcheted message keys derived dynamically between peer devices.
+  - Forward-secret and break-in recoverable.
+  - Authenticated via NIST FIPS 204 (ML-DSA-87) digital signatures.
+  - Zero-knowledge to server and network infrastructure.
+
+### Domain 2: Local At-Rest Encryption (Client Storage Protection)
+- **Status**: Local client at-rest protection specification.
+- **Cryptographic Pipeline**:
+  `AES-256-GCM` used **ONLY** to encrypt the local IndexedDB/SQLite message cache and locally-stored private key material.
+- **Key Wrapping and Keystore Integration**:
+  The local at-rest encryption key is wrapped and secured using platform-native hardware security APIs:
+  - **Web**: `WebCrypto subtle.wrapKey` with non-extractable CryptoKeys stored in IndexedDB, protected by browser-origin sandboxing and optional user passphrase/Argon2id master key derivation.
+  - **Android**: Android Keystore provider (`AndroidKeyStore`), utilizing Hardware Security Modules (HSM), Trusted Execution Environments (TEE), or StrongBox.
+  - **Desktop**: Native OS-level key vaults:
+    - macOS: Apple Keychain Services API.
+    - Windows: Data Protection API (DPAPI) / Windows Credential Manager.
+    - Linux: Secret Service API / `libsecret` / FreeDesktop Secret Service.
+- **Strict Isolation Guarantees**:
+  1. **Non-Exfiltration**: The local at-rest key never leaves the device and is never transmitted to the server or any third party.
+  2. **Zero Cryptographic Cross-Contamination**: The at-rest key is **never derived from or combined with the message-transport keys** in Domain 1.
+  3. **Compartmentalized Compromise**: If an attacker intercepts Domain 1 transport packets, they gain zero information about Domain 2 at-rest storage keys. Conversely, physical extraction of an offline device database does not reveal transport ratchet seeds without unwrapping via the platform hardware keystore.
+
+### Explicit Architectural Boundary: RSA vs. Per-Message AEAD
+- **Role of RSA**: RSA is used **only** for the TLS certificate chain at the network/infrastructure layer (or ECDSA certificates, which are strongly preferred) to authenticate standard HTTPS/WSS transport between the client and reverse proxy/CDN.
+- **Never Used for Message Payloads**: RSA is **never** used for message payloads, session handshakes, or E2EE envelopes.
+- **Technical Rationale**: RSA has **no role in per-message AEAD**. It provides neither post-quantum security (vulnerable to Shor's algorithm) nor forward secrecy when used for encryption, and imposes excessive computational and ciphertext expansion overhead compared to ChaCha20-Poly1305 and modern hybrid KEM schemes (ML-KEM-1024 + X25519).
+
+---
+
+## 3. Key Hierarchy & Cryptographic Primitives
 
 ```
                            +---------------------------+
@@ -66,19 +149,22 @@ YChat implements a zero-knowledge, hybrid post-quantum end-to-end encryption (E2
 
 ### Audited Primitives Reference Table
 
-| Role | Primitive | Specification / Standard | Library Used |
-| :--- | :--- | :--- | :--- |
-| **Post-Quantum Signing** | ML-DSA-87 | NIST FIPS 204 (Dilithium-5) | `@noble/post-quantum/ml-dsa` |
-| **Post-Quantum KEM** | ML-KEM-1024 | NIST FIPS 203 (Kyber-1024) | `@noble/post-quantum/ml-kem` |
-| **Classical Key Exchange** | X25519 | RFC 7748 / Curve25519 ECDH | `@noble/curves/ed25519` |
-| **Symmetric Cipher** | ChaCha20-Poly1305 | RFC 8439 (256-bit key, 96-bit nonce, 128-bit tag) | `@noble/ciphers/chacha` |
-| **Key Derivation Function** | HKDF-SHA3-512 | RFC 5869 + FIPS 202 SHA3-512 | `@noble/hashes/hkdf`, `@noble/hashes/sha3` |
-| **Tamper-Evident History** | BLAKE3 Hash Chain | BLAKE3 Cryptographic Hash | `@noble/hashes/blake3` |
-| **Password Hashing** | Argon2id | RFC 9106 (Memory: 64MB, Iterations: 3, Parallelism: 1) | `@noble/hashes/argon2` |
+| Domain / Layer | Role | Primitive | Specification / Standard | Library / Provider |
+| :--- | :--- | :--- | :--- | :--- |
+| **Domain 1: Message Transport** | Post-Quantum Signing | ML-DSA-87 | NIST FIPS 204 (Dilithium-5) | `@noble/post-quantum/ml-dsa` |
+| **Domain 1: Message Transport** | Post-Quantum KEM | ML-KEM-1024 | NIST FIPS 203 (Kyber-1024) | `@noble/post-quantum/ml-kem` |
+| **Domain 1: Message Transport** | Classical Key Exchange | X25519 | RFC 7748 / Curve25519 ECDH | `@noble/curves/ed25519` |
+| **Domain 1: Message Transport** | Symmetric Message AEAD | ChaCha20-Poly1305 | RFC 8439 (256-bit key, 96-bit nonce, 128-bit tag) | `@noble/ciphers/chacha` |
+| **Domain 1: Message Transport** | Key Derivation Function | HKDF-SHA3-512 | RFC 5869 + FIPS 202 SHA3-512 | `@noble/hashes/hkdf`, `@noble/hashes/sha3` |
+| **Domain 2: Local At-Rest** | Storage Cache Cipher | AES-256-GCM | NIST SP 800-38D (256-bit key, 96-bit IV) | WebCrypto API / Native SQLite cipher |
+| **Domain 2: Local At-Rest** | Hardware Key Wrapping | Keystore / KeyWrap | WebCrypto `subtle.wrapKey` / Android Keystore / OS Keychain / DPAPI | Platform Hardware Security / WebCrypto |
+| **Local Integrity** | Tamper-Evident History | BLAKE3 Hash Chain | BLAKE3 Cryptographic Hash | `@noble/hashes/blake3` |
+| **Authentication** | Password Hashing | Argon2id | RFC 9106 (Memory: 64MB, Iterations: 3, Parallelism: 1) | `@noble/hashes/argon2` |
+| **Infrastructure Layer** | Transport Channel Security | TLS 1.3 | RFC 8446 (ECDSA or RSA cert chain only; never for message payloads) | Network TLS / Reverse Proxy |
 
 ---
 
-## 3. Device Key Generation & Registration
+## 4. Device Key Generation & Registration
 
 When a user initializes YChat on any client device (Web, Desktop, or Android):
 1. **Identity Signing Keypair**: Generates an ML-DSA-87 keypair `(ik_sign_pub, ik_sign_priv)`.
@@ -92,7 +178,7 @@ When a user initializes YChat on any client device (Web, Desktop, or Android):
 
 ---
 
-## 4. Hybrid X3DH-Style Session Establishment
+## 5. Hybrid X3DH-Style Session Establishment
 
 To initiate a secure conversation with recipient Bob, Alice's device:
 1. Fetches Bob's active device prekey bundle from the server (`/api/v1/devices/:deviceId/prekeys`):
@@ -122,7 +208,7 @@ To initiate a secure conversation with recipient Bob, Alice's device:
 
 ---
 
-## 5. Ratchet & Rekeying Specifications
+## 6. Ratchet & Rekeying Specifications
 
 To ensure forward secrecy and break-in recovery:
 1. **Session Key**: Derived from `master_secret` using `HKDF-SHA3-512(master_secret, "ychat-session-v1", 32)`.
@@ -137,7 +223,7 @@ To ensure forward secrecy and break-in recovery:
 
 ---
 
-## 6. Message Encryption & Signature Envelope
+## 7. Message Encryption & Signature Envelope
 
 Every message sent through YChat follows this strict serialization:
 1. Client generates a 96-bit (12-byte) cryptographically secure random nonce via `crypto.getRandomValues`.
@@ -167,7 +253,7 @@ Every message sent through YChat follows this strict serialization:
 
 ---
 
-## 7. Local Client BLAKE3 Hash Chain
+## 8. Local Client BLAKE3 Hash Chain
 
 To provide local tamper-evidence against database manipulation or malicious modification of client storage:
 - Each conversation maintains a running cryptographic hash:
@@ -178,7 +264,7 @@ To provide local tamper-evidence against database manipulation or malicious modi
 
 ---
 
-## 8. Safety Numbers (MITM Verification)
+## 9. Safety Numbers (MITM Verification)
 
 Users can verify cryptographic authenticity out-of-band to prevent active Man-in-the-Middle (MITM) attacks or unauthorized key substitutions:
 - Safety numbers are calculated from sorted device identity public keys:
@@ -188,7 +274,7 @@ Users can verify cryptographic authenticity out-of-band to prevent active Man-in
 
 ---
 
-## 9. Stated Security Guarantees & Non-Guarantees
+## 10. Stated Security Guarantees & Non-Guarantees
 
 ### What IS Guaranteed
 1. **Confidentiality against Classical and Quantum Attackers**: Ciphertexts protected by ChaCha20-Poly1305 with keys derived from hybrid X25519 and ML-KEM-1024 cannot be decrypted by passive eavesdroppers, cloud providers, or quantum computers executing Shor's algorithm.

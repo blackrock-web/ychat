@@ -5,11 +5,16 @@ import { PostgresRLSQueryLayer, requireConversationMember } from '../middleware/
 
 export const conversationsRouter = express.Router();
 
-// POST /api/v1/conversations
+// POST /api/v1/conversations and POST /api/v1/conversations/initiate
 // Create or retrieve direct conversation with a recipient
-conversationsRouter.post('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+const handleCreateConversation = (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user!.userId;
-  const { recipientUuid } = req.body;
+  let recipientUuid = req.body.recipientUuid;
+
+  if (!recipientUuid && req.body.recipientUsername) {
+    const userByUsername = db.findUserByUsername(req.body.recipientUsername);
+    if (userByUsername) recipientUuid = userByUsername.id;
+  }
 
   if (!recipientUuid || typeof recipientUuid !== 'string') {
     return res.status(400).json({ error: 'recipientUuid is required' });
@@ -35,7 +40,10 @@ conversationsRouter.post('/', requireAuth, (req: AuthenticatedRequest, res: Resp
     ],
     createdAt: conv.createdAt
   });
-});
+};
+
+conversationsRouter.post('/', requireAuth, handleCreateConversation);
+conversationsRouter.post('/initiate', requireAuth, handleCreateConversation);
 
 // GET /api/v1/conversations
 // Strict RLS query: Get only conversations where authenticated user is in conversation_members
@@ -90,6 +98,8 @@ conversationsRouter.get('/:id/messages', requireAuth, requireConversationMember(
     messages: messages.map(m => ({
       id: m.id,
       clientMessageId: m.clientMessageId,
+      senderUserId: m.senderUserId,
+      recipientUserId: m.recipientUserId,
       senderDeviceId: m.senderDeviceId,
       recipientDeviceId: m.recipientDeviceId,
       ciphertext: m.ciphertext,

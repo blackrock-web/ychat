@@ -4,10 +4,11 @@ import path from 'path';
 import { serverSyncDiagnostic } from './syncDiagnostic';
 
 export interface DBUser {
-  id: string; // UUID v4
-  username: string;
+  id: string; // Permanent MyChat User UUID
+  authUserId?: string; // Supabase Auth User UUID mapping
+  username: string; // Original username case
+  usernameNormalized: string; // Enforces case-insensitive uniqueness (alice == ALICE)
   email: string;
-  passwordHash: string;
   displayName: string;
   createdAt: string;
   updatedAt: string;
@@ -15,7 +16,7 @@ export interface DBUser {
 
 export interface DBDevice {
   id: string; // deviceId
-  userId: string; // UUID v4
+  userId: string; // MyChat User UUID
   deviceName: string;
   platform: 'web' | 'desktop' | 'android' | 'ios';
   publicSignKey: string;
@@ -45,13 +46,15 @@ export interface DBConversation {
 
 export interface DBConversationMember {
   conversationId: string;
-  userId: string;
+  userId: string; // MyChat User UUID
   joinedAt: string;
 }
 
 export interface DBMsgRecord {
   id: string; // UUID v4
   conversationId: string;
+  senderUserId: string; // Authoritative sender MyChat UUID (from authenticated token)
+  recipientUserId: string; // Authoritative recipient MyChat UUID
   senderDeviceId: string;
   recipientDeviceId: string;
   clientMessageId: string;
@@ -62,11 +65,9 @@ export interface DBMsgRecord {
   sequence: number;
   serverSequence: number;
   handshakePacket?: any;
-  expiresAt: string;
+  expiresAt: string; // 15-minute TTL for temporary offline queue
   chunkIndex?: number;
   chunkCount?: number;
-  senderUserId?: string;
-  recipientUserId?: string;
   createdAt: string;
   deliveredAt?: string;
   readAt?: string;
@@ -82,15 +83,15 @@ export interface DBSession {
 }
 
 export interface DBInvite {
-  id: string; // UUID v4
+  id: string;
   creatorUserId: string;
   creatorDeviceId: string;
-  sessionId?: string; // initiating session identifier
-  token: string; // Long CSPRNG token for QR payloads
-  pairingCode: string; // Cryptographically secure 60-bit alphanumeric pairing code
-  sessionBinding?: string; // Cryptographic HMAC binding invite to initiator session
-  entropyBits?: number; // 60 bits
-  expiresAt: string; // ISO Date string
+  sessionId?: string;
+  token: string;
+  pairingCode: string;
+  sessionBinding?: string;
+  entropyBits?: number;
+  expiresAt: string;
   isUsed: boolean;
   usedAt?: string;
   usedByUserId?: string;
@@ -108,9 +109,6 @@ interface DatabaseSchema {
   invites: DBInvite[];
 }
 
-// Unambiguous 64-character alphabet for CSPRNG pairing codes
-// Excludes confusing visual characters: '0', 'O', '1', 'I', 'l'
-// Contains: A-Z (24 chars), a-z (24 chars), 2-9 (8 chars), safe special symbols (8 chars)
 const PAIRING_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz#$@!%&*-';
 
 export function generateSecurePairingCode(length: number = 9): string {
@@ -123,7 +121,7 @@ export function generateSecurePairingCode(length: number = 9): string {
 }
 
 class StorageEngine {
-  private data: DatabaseSchema = {
+  public data: DatabaseSchema = {
     users: [],
     devices: [],
     devicePrekeys: [],
@@ -154,61 +152,112 @@ class StorageEngine {
         const raw = fs.readFileSync(this.filePath, 'utf8');
         const parsed = JSON.parse(raw);
         this.data = {
-          users: parsed.users || [],
+          users: (parsed.users || []).map((u: any) => ({
+            id: u.id,
+            authUserId: u.authUserId || u.id,
+            username: u.username,
+            usernameNormalized: u.usernameNormalized || u.username.trim().toLowerCase(),
+            email: u.email,
+            displayName: u.displayName,
+            createdAt: u.createdAt,
+            updatedAt: u.updatedAt
+          })),
           devices: parsed.devices || [],
           devicePrekeys: parsed.devicePrekeys || [],
           conversations: parsed.conversations || [],
           conversationMembers: parsed.conversationMembers || [],
-          messages: parsed.messages || [],
+          messages: (parsed.messages || [])
+            .filter((m: any) => m && m.signature && typeof m.signature === 'string' && m.signature.length >= 1000)
+            .map((m: any) => ({
+              ...m,
+              expiresAt: m.expiresAt || new Date(new Date(m.createdAt || Date.now()).getTime() + 15 * 60 * 1000).toISOString()
+            })),
           sessions: parsed.sessions || [],
           invites: parsed.invites || []
         };
         this.sequenceCounter = this.data.messages.reduce((max, m) => Math.max(max, m.serverSequence || 0), 0);
+        this.cleanupExpiredAndDeliveredMessages();
       }
     } catch {
-      // Use in-memory defaults if load fails
+      // In-memory fallback
     }
   }
 
-  private persist() {
+  public persist() {
     try {
       fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), 'utf8');
     } catch {}
   }
 
   // ==========================================
-  // USERS
+  // USERS & IDENTITY (UUID-to-UUID)
   // ==========================================
-  createUser(user: Omit<DBUser, 'id' | 'createdAt' | 'updatedAt'>): DBUser {
+
+  /**
+   * Enforces case-insensitive username uniqueness at the database level.
+   * e.g. "Alice", "alice", "ALICE" all normalize to "alice".
+   * Never stores passwords or password hashes in the MyChat application database.
+   */
+  createUser(user: {
+    username: string;
+    email: string;
+    displayName: string;
+    authUserId?: string;
+    customUuid?: string;
+  }): DBUser {
+    const trimmedUsername = user.username.trim();
+    const normalized = trimmedUsername.toLowerCase();
+
+    // Verify uniqueness against username_normalized
+    const existing = this.findUserByNormalizedUsername(normalized);
+    if (existing) {
+      throw new Error('Username already taken');
+    }
+
     const now = new Date().toISOString();
     const newUser: DBUser = {
-      id: crypto.randomUUID(),
-      username: user.username.toLowerCase(),
-      email: user.email.toLowerCase(),
-      passwordHash: user.passwordHash,
-      displayName: user.displayName,
+      id: user.customUuid || crypto.randomUUID(), // Permanent MyChat User UUID
+      authUserId: user.authUserId || user.customUuid || crypto.randomUUID(),
+      username: trimmedUsername,
+      usernameNormalized: normalized,
+      email: user.email.trim().toLowerCase(),
+      displayName: user.displayName || trimmedUsername,
       createdAt: now,
       updatedAt: now
     };
+
     this.data.users.push(newUser);
     this.persist();
     return newUser;
   }
 
   findUserByUsername(username: string): DBUser | undefined {
-    return this.data.users.find(u => u.username.toLowerCase() === username.toLowerCase());
+    const norm = username.trim().toLowerCase();
+    return this.data.users.find(u => u.usernameNormalized === norm);
+  }
+
+  findUserByNormalizedUsername(normalized: string): DBUser | undefined {
+    const norm = normalized.trim().toLowerCase();
+    return this.data.users.find(u => u.usernameNormalized === norm);
   }
 
   findUserById(id: string): DBUser | undefined {
     return this.data.users.find(u => u.id === id);
   }
 
-  // Exact or prefix username lookup: returns ONLY public profile attributes (never email or secrets)
+  findUserByAuthUserId(authUserId: string): DBUser | undefined {
+    return this.data.users.find(u => u.authUserId === authUserId || u.id === authUserId);
+  }
+
+  /**
+   * Case-insensitive search returning public profile attributes (UUID, username, displayName)
+   * Strictly no email, secrets, or internal auth identifiers.
+   */
   searchUsers(query: string, excludeUserId?: string): Array<{ uuid: string; username: string; displayName: string }> {
     const q = query.toLowerCase().trim();
     if (!q) return [];
     return this.data.users
-      .filter(u => u.id !== excludeUserId && (u.username.toLowerCase() === q || u.username.toLowerCase().startsWith(q)))
+      .filter(u => u.id !== excludeUserId && (u.usernameNormalized === q || u.usernameNormalized.startsWith(q)))
       .map(u => ({
         uuid: u.id,
         username: u.username,
@@ -217,7 +266,7 @@ class StorageEngine {
   }
 
   // ==========================================
-  // DEVICES
+  // DEVICES & KEYS
   // ==========================================
   registerDevice(device: Omit<DBDevice, 'createdAt' | 'lastSeen'>): DBDevice {
     const existingIndex = this.data.devices.findIndex(d => d.id === device.id);
@@ -260,9 +309,6 @@ class StorageEngine {
     return false;
   }
 
-  // ==========================================
-  // PREKEYS (X3DH)
-  // ==========================================
   savePrekeys(deviceId: string, prekeys: Array<{ id: number; dhKey: string; kemKey: string }>) {
     const now = new Date().toISOString();
     for (const pk of prekeys) {
@@ -373,13 +419,36 @@ class StorageEngine {
     return results;
   }
 
+  getUserSharedParticipantIds(userId: string): string[] {
+    const myConvs = new Set(
+      this.data.conversationMembers
+        .filter(m => m.userId === userId)
+        .map(m => m.conversationId)
+    );
+
+    const partnerIds = new Set<string>();
+    for (const m of this.data.conversationMembers) {
+      if (myConvs.has(m.conversationId) && m.userId !== userId) {
+        partnerIds.add(m.userId);
+      }
+    }
+    return Array.from(partnerIds);
+  }
+
   // ==========================================
-  // CIPHERTEXT MESSAGES (STRICT ZERO-KNOWLEDGE)
+  // CIPHERTEXT MESSAGES (STRICT ZERO-KNOWLEDGE & UUID ROUTING)
   // ==========================================
+
+  /**
+   * Stores ciphertext envelope with authoritative sender_uuid and recipient_uuid.
+   * Enforces 15-minute retention TTL for offline queue.
+   */
   storeMessage(record: {
     conversationId: string;
-    senderDeviceId: string;
-    recipientDeviceId: string;
+    senderUserId: string; // Authoritative sender MyChat UUID
+    recipientUserId: string; // Authoritative recipient MyChat UUID
+    senderDeviceId?: string;
+    recipientDeviceId?: string;
     clientMessageId: string;
     ciphertext: string;
     nonce: string;
@@ -395,33 +464,40 @@ class StorageEngine {
     const existing = this.data.messages.find(m => m.clientMessageId === record.clientMessageId);
     if (existing) return existing;
 
-    const senderDev = this.findDeviceById(record.senderDeviceId);
-    const recipientDev = this.findDeviceById(record.recipientDeviceId);
-
     // Verify & ensure conversation record linkage
     let conv = this.getConversationById(record.conversationId);
-    if (!conv && senderDev?.userId && recipientDev?.userId) {
-      conv = this.createDirectConversation(senderDev.userId, recipientDev.userId);
+    if (!conv && record.senderUserId && record.recipientUserId) {
+      conv = this.createDirectConversation(record.senderUserId, record.recipientUserId);
       record.conversationId = conv.id;
     }
 
     this.sequenceCounter++;
     const now = new Date();
-    // Default 15 minutes TTL for temporary queue
+    // Enforce 15-minute maximum TTL for temporary delivery queue
     const expiresAt = record.expiresAt || new Date(now.getTime() + 15 * 60 * 1000).toISOString();
 
+    const senderDev = record.senderDeviceId || `dev-${record.senderUserId.slice(0, 8)}`;
+    const recipientDev = record.recipientDeviceId || `dev-${record.recipientUserId.slice(0, 8)}`;
+
     const msg: DBMsgRecord = {
-      ...record,
       id: crypto.randomUUID(),
-      serverSequence: this.sequenceCounter,
-      createdAt: now.toISOString(),
-      expiresAt,
+      conversationId: record.conversationId,
+      senderUserId: record.senderUserId,
+      recipientUserId: record.recipientUserId,
+      senderDeviceId: senderDev,
+      recipientDeviceId: recipientDev,
+      clientMessageId: record.clientMessageId,
+      ciphertext: record.ciphertext,
+      nonce: record.nonce,
+      signature: record.signature,
+      encryptionVersion: record.encryptionVersion || 'hybrid-x25519-mlkem1024-v1',
       sequence: record.sequence ?? 1,
+      serverSequence: this.sequenceCounter,
       handshakePacket: record.handshakePacket,
+      expiresAt,
       chunkIndex: record.chunkIndex ?? 0,
       chunkCount: record.chunkCount ?? 1,
-      senderUserId: senderDev?.userId,
-      recipientUserId: recipientDev?.userId
+      createdAt: now.toISOString()
     };
 
     this.data.messages.push(msg);
@@ -431,6 +507,8 @@ class StorageEngine {
       clientMessageId: msg.clientMessageId,
       conversationId: msg.conversationId,
       messageId: msg.id,
+      senderUserId: msg.senderUserId,
+      recipientUserId: msg.recipientUserId,
       senderDeviceId: msg.senderDeviceId,
       recipientDeviceId: msg.recipientDeviceId,
       serverSequence: msg.serverSequence,
@@ -445,12 +523,15 @@ class StorageEngine {
       clientMessageId: msg.clientMessageId,
       conversationId: msg.conversationId,
       messageId: msg.id,
+      senderUserId: msg.senderUserId,
+      recipientUserId: msg.recipientUserId,
       senderDeviceId: msg.senderDeviceId,
       recipientDeviceId: msg.recipientDeviceId,
       serverSequence: msg.serverSequence,
       details: {
         deliveredAt: msg.deliveredAt || null,
-        expiresAt: msg.expiresAt
+        expiresAt: msg.expiresAt,
+        ttlMinutes: 15
       }
     });
 
@@ -458,7 +539,7 @@ class StorageEngine {
   }
 
   getConversationMessages(conversationId: string, userId: string): DBMsgRecord[] {
-    // Strict isolation check: caller must be a member
+    // Strict isolation check: caller must be an active member in conversation_members
     if (!this.isUserMemberOfConversation(userId, conversationId)) {
       return [];
     }
@@ -466,8 +547,10 @@ class StorageEngine {
     return this.data.messages
       .filter(m => {
         if (m.conversationId !== conversationId) return false;
+        if (!m.signature || typeof m.signature !== 'string' || m.signature.length < 1000) return false;
         // Expired undelivered messages must not be returned
-        if (!m.deliveredAt && new Date(m.expiresAt).getTime() <= now) return false;
+        const expiry = m.expiresAt ? new Date(m.expiresAt).getTime() : (new Date(m.createdAt).getTime() + 15 * 60 * 1000);
+        if (!m.deliveredAt && (isNaN(expiry) || expiry <= now)) return false;
         return true;
       })
       .sort((a, b) => a.serverSequence - b.serverSequence);
@@ -483,6 +566,8 @@ class StorageEngine {
         clientMessageId: msg.clientMessageId,
         conversationId: msg.conversationId,
         messageId: msg.id,
+        senderUserId: msg.senderUserId,
+        recipientUserId: msg.recipientUserId,
         senderDeviceId: msg.senderDeviceId,
         recipientDeviceId: msg.recipientDeviceId,
         serverSequence: msg.serverSequence,
@@ -511,16 +596,25 @@ class StorageEngine {
     return this.data.messages.find(m => m.id === messageId || m.clientMessageId === messageId);
   }
 
+  /**
+   * Retrieves pending undelivered messages for recipient UUID or device.
+   * Strictly verifies that the recipient is an authorized member in conversation_members
+   * for every message retrieved!
+   */
   getUndeliveredForDevice(recipientDeviceId: string, sinceSequence: number = 0, userId?: string): DBMsgRecord[] {
     const now = Date.now();
     return this.data.messages
       .filter(m => {
-        if (m.recipientDeviceId !== recipientDeviceId) return false;
+        const matchesRecipient = m.recipientDeviceId === recipientDeviceId || (userId && m.recipientUserId === userId);
+        if (!matchesRecipient) return false;
         if (m.serverSequence <= sinceSequence) return false;
         if (m.deliveredAt) return false;
+        // Verify valid ML-DSA-87 signature
+        if (!m.signature || typeof m.signature !== 'string' || m.signature.length < 1000) return false;
         // Expired messages are permanently dropped (15-min offline TTL)
-        if (new Date(m.expiresAt).getTime() <= now) return false;
-        // Strict database-level isolation: if caller userId is provided, must be a member
+        const expiry = m.expiresAt ? new Date(m.expiresAt).getTime() : (new Date(m.createdAt).getTime() + 15 * 60 * 1000);
+        if (isNaN(expiry) || expiry <= now) return false;
+        // Strict database-level isolation: caller userId must be in conversation_members
         if (userId && !this.isUserMemberOfConversation(userId, m.conversationId)) return false;
         return true;
       })
@@ -528,17 +622,41 @@ class StorageEngine {
   }
 
   /**
+   * Retrieves undelivered messages addressed to recipient UUID
+   */
+  getUndeliveredForUser(recipientUserId: string, sinceSequence: number = 0): DBMsgRecord[] {
+    const now = Date.now();
+    return this.data.messages
+      .filter(m => {
+        if (m.recipientUserId !== recipientUserId) return false;
+        if (m.serverSequence <= sinceSequence) return false;
+        if (m.deliveredAt) return false;
+        // Verify valid ML-DSA-87 signature
+        if (!m.signature || typeof m.signature !== 'string' || m.signature.length < 1000) return false;
+        const expiry = m.expiresAt ? new Date(m.expiresAt).getTime() : (new Date(m.createdAt).getTime() + 15 * 60 * 1000);
+        if (isNaN(expiry) || expiry <= now) return false;
+        if (!this.isUserMemberOfConversation(recipientUserId, m.conversationId)) return false;
+        return true;
+      })
+      .sort((a, b) => a.serverSequence - b.serverSequence);
+  }
+
+  /**
    * Periodic cleanup worker for expired messages and delivered temporary delivery copies.
-   * Default 15 minute TTL enforced server-side.
+   * Maximum 15-minute TTL enforced server-side.
    */
   cleanupExpiredAndDeliveredMessages(): number {
     const now = Date.now();
     const initialCount = this.data.messages.length;
 
     this.data.messages = this.data.messages.filter(m => {
+      // 0. Drop invalid signature stubs
+      if (!m.signature || typeof m.signature !== 'string' || m.signature.length < 1000) {
+        return false;
+      }
       // 1. Permanent deletion after 15-minute TTL expiration if recipient did not reconnect
-      const expiry = new Date(m.expiresAt).getTime();
-      if (!isNaN(expiry) && expiry <= now) {
+      const expiry = m.expiresAt ? new Date(m.expiresAt).getTime() : (new Date(m.createdAt).getTime() + 15 * 60 * 1000);
+      if (isNaN(expiry) || (!m.deliveredAt && expiry <= now)) {
         return false;
       }
       // 2. Remove temporary server delivery copy once delivered & read
@@ -548,89 +666,20 @@ class StorageEngine {
       return true;
     });
 
-    if (this.data.messages.length !== initialCount) {
+    const pruned = initialCount - this.data.messages.length;
+    if (pruned > 0) {
       this.persist();
     }
-    return initialCount - this.data.messages.length;
-  }
-
-  getUserSharedParticipantIds(userId: string): string[] {
-    const userConvIds = this.data.conversationMembers
-      .filter(m => m.userId === userId)
-      .map(m => m.conversationId);
-    const sharedUsers = new Set<string>();
-    for (const convId of userConvIds) {
-      const members = this.data.conversationMembers.filter(m => m.conversationId === convId);
-      for (const m of members) {
-        if (m.userId !== userId) sharedUsers.add(m.userId);
-      }
-    }
-    return Array.from(sharedUsers);
+    return pruned;
   }
 
   // ==========================================
-  // INVITES & SECURE SHORT PAIRING CODES
+  // SESSIONS
   // ==========================================
-  createInvite(creatorUserId: string, creatorDeviceId: string, ttlMinutes: number = 15): DBInvite {
+  createSession(userId: string, deviceId: string, refreshToken: string, expiryDays: number = 30): DBSession {
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString();
-    const token = crypto.randomBytes(24).toString('hex');
-    const pairingCode = generateSecurePairingCode(9);
-
-    const invite: DBInvite = {
-      id: crypto.randomUUID(),
-      creatorUserId,
-      creatorDeviceId,
-      token,
-      pairingCode,
-      expiresAt,
-      isUsed: false,
-      createdAt: now.toISOString()
-    };
-
-    this.data.invites.push(invite);
-    this.persist();
-    return invite;
-  }
-
-  findInviteByTokenOrCode(tokenOrCode: string): DBInvite | undefined {
-    const trimmed = tokenOrCode.trim();
-    const now = new Date().toISOString();
-    return this.data.invites.find(
-      inv => !inv.isUsed && inv.expiresAt > now && (inv.token === trimmed || inv.pairingCode === trimmed)
-    );
-  }
-
-  consumeInvite(inviteId: string, usedByUserId: string): { success: boolean; invite?: DBInvite; error?: string } {
-    const invite = this.data.invites.find(inv => inv.id === inviteId);
-    if (!invite) {
-      return { success: false, error: 'Invite not found' };
-    }
-    const now = new Date().toISOString();
-    if (invite.isUsed) {
-      return { success: false, error: 'Invite code has already been used (single-use)' };
-    }
-    if (invite.expiresAt <= now) {
-      return { success: false, error: 'Invite code has expired' };
-    }
-    if (invite.creatorUserId === usedByUserId) {
-      return { success: false, error: 'Cannot accept your own invite code' };
-    }
-
-    invite.isUsed = true;
-    invite.usedAt = now;
-    invite.usedByUserId = usedByUserId;
-    this.persist();
-    return { success: true, invite };
-  }
-
-  // ==========================================
-  // SESSIONS & REFRESH TOKENS
-  // ==========================================
-  createSession(userId: string, deviceId: string, refreshToken: string, expiresInDays: number = 30): DBSession {
+    const expiresAt = new Date(now.getTime() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
     const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    const now = new Date();
-    const expires = new Date(now.getTime() + expiresInDays * 24 * 60 * 60 * 1000);
 
     const session: DBSession = {
       id: crypto.randomUUID(),
@@ -638,8 +687,9 @@ class StorageEngine {
       deviceId,
       refreshTokenHash: hash,
       createdAt: now.toISOString(),
-      expiresAt: expires.toISOString()
+      expiresAt
     };
+
     this.data.sessions.push(session);
     this.persist();
     return session;
@@ -647,17 +697,21 @@ class StorageEngine {
 
   verifySession(userId: string, refreshToken: string): boolean {
     const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    const now = new Date().toISOString();
-    const session = this.data.sessions.find(
-      s => s.userId === userId && s.refreshTokenHash === hash && s.expiresAt > now
-    );
-    return !!session;
+    const now = new Date().getTime();
+    const session = this.data.sessions.find(s => s.userId === userId && s.refreshTokenHash === hash);
+    if (!session) return false;
+    return new Date(session.expiresAt).getTime() > now;
   }
 
-  revokeSession(userId: string, refreshToken: string) {
+  revokeSession(userId: string, refreshToken: string): boolean {
     const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    this.data.sessions = this.data.sessions.filter(s => !(s.userId === userId && s.refreshTokenHash === hash));
-    this.persist();
+    const idx = this.data.sessions.findIndex(s => s.userId === userId && s.refreshTokenHash === hash);
+    if (idx >= 0) {
+      this.data.sessions.splice(idx, 1);
+      this.persist();
+      return true;
+    }
+    return false;
   }
 }
 

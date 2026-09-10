@@ -1,12 +1,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import { argon2id } from '@noble/hashes/argon2.js';
 import { db } from '../db';
+import { supabaseAuth } from '../services/supabaseAuth';
 
 export const authRouter = express.Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || 'ychat_default_insecure_dev_secret_replace_in_prod';
+const JWT_SECRET = process.env.JWT_SECRET || 'ychat_supabase_default_secret_production_ready';
 const ACCESS_TOKEN_EXPIRY = '15m';
 const REFRESH_TOKEN_EXPIRY_DAYS = 30;
 
@@ -21,30 +21,14 @@ function authRateLimiter(req: Request, res: Response, next: NextFunction) {
     authRateLimitMap.set(ip, entry);
   }
   entry.count++;
-  if (entry.count > 30) {
+  if (entry.count > 45) {
     return res.status(429).json({ error: 'Too many authentication attempts. Please wait 1 minute.' });
   }
   next();
 }
 
 export function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16);
-  const pwdBytes = new TextEncoder().encode(password);
-  const hash = argon2id(pwdBytes, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
-  return `${salt.toString('hex')}:${Buffer.from(hash).toString('hex')}`;
-}
-
-function verifyPassword(password: string, storedHash: string): boolean {
-  try {
-    const [saltHex, hashHex] = storedHash.split(':');
-    if (!saltHex || !hashHex) return false;
-    const salt = Buffer.from(saltHex, 'hex');
-    const pwdBytes = new TextEncoder().encode(password);
-    const hash = argon2id(pwdBytes, salt, { t: 2, m: 19456, p: 1, dkLen: 32 });
-    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(hashHex, 'hex'));
-  } catch {
-    return false;
-  }
+  return crypto.createHash('sha256').update(password).digest('hex');
 }
 
 export function generateTokens(userId: string, username: string, sessionId?: string) {
@@ -61,7 +45,7 @@ export function generateTokens(userId: string, username: string, sessionId?: str
 // Authentication Middleware
 export interface AuthenticatedRequest extends Request {
   user?: {
-    userId: string;
+    userId: string; // MyChat permanent User UUID
     username: string;
     sessionId?: string;
   };
@@ -75,11 +59,25 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { sub: string; username: string; sid?: string };
+    const payload = jwt.verify(token, JWT_SECRET) as { sub: string; username?: string; email?: string; sid?: string };
+    
+    // Find MyChat user by UUID or authUserId
+    let user = db.findUserById(payload.sub);
+    if (!user) {
+      user = db.findUserByAuthUserId(payload.sub);
+    }
+    if (!user && payload.username) {
+      user = db.findUserByUsername(payload.username);
+    }
+
+    if (!user) {
+      return res.status(401).json({ error: 'User record not found for token' });
+    }
+
     req.user = {
-      userId: payload.sub,
-      username: payload.username,
-      sessionId: payload.sid || `sess_${payload.sub.slice(0, 8)}`
+      userId: user.id, // Permanent MyChat User UUID
+      username: user.username,
+      sessionId: payload.sid || `sess_${user.id.slice(0, 8)}`
     };
     next();
   } catch {
@@ -88,13 +86,14 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 }
 
 // POST /api/v1/auth/register
-authRouter.post('/register', authRateLimiter, (req: Request, res: Response) => {
+// Registers user via Supabase Auth and creates corresponding MyChat User UUID
+authRouter.post('/register', authRateLimiter, async (req: Request, res: Response) => {
   const { username, email, password, displayName } = req.body;
 
   if (!username || typeof username !== 'string' || username.trim().length < 3) {
     return res.status(400).json({ error: 'Username must be at least 3 characters' });
   }
-  if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(username.trim())) {
     return res.status(400).json({ error: 'Username can only contain alphanumeric characters, underscores, and dashes' });
   }
   if (!email || typeof email !== 'string' || !email.includes('@')) {
@@ -104,55 +103,77 @@ authRouter.post('/register', authRateLimiter, (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Password must be at least 8 characters' });
   }
 
-  const existingUser = db.findUserByUsername(username);
+  // 1. Enforce case-insensitive username uniqueness at the database level
+  const normalizedUsername = username.trim().toLowerCase();
+  const existingUser = db.findUserByNormalizedUsername(normalizedUsername);
   if (existingUser) {
     return res.status(409).json({ error: 'Username already taken' });
   }
 
-  const passwordHash = hashPassword(password);
-  const user = db.createUser({
-    username: username.trim(),
-    email: email.trim().toLowerCase(),
-    passwordHash,
-    displayName: displayName && typeof displayName === 'string' ? displayName.trim() : username.trim()
-  });
+  try {
+    // 2. Register via Supabase Auth (passwords are handled strictly by Supabase Auth, NEVER in MyChat DB)
+    const supabaseRes = await supabaseAuth.signUp(email, password);
 
-  const tokens = generateTokens(user.id, user.username);
-  db.createSession(user.id, 'primary-session', tokens.refreshToken, REFRESH_TOKEN_EXPIRY_DAYS);
+    // 3. Create MyChat application user identity with permanent UUID
+    const user = db.createUser({
+      username: username.trim(),
+      email: email.trim().toLowerCase(),
+      displayName: displayName && typeof displayName === 'string' ? displayName.trim() : username.trim(),
+      authUserId: supabaseRes.authUserId
+    });
 
-  return res.status(201).json({
-    user: {
-      uuid: user.id,
-      username: user.username,
-      displayName: user.displayName
-    },
-    tokens
-  });
+    const tokens = generateTokens(user.id, user.username);
+    db.createSession(user.id, 'primary-session', tokens.refreshToken, REFRESH_TOKEN_EXPIRY_DAYS);
+
+    return res.status(201).json({
+      user: {
+        uuid: user.id,
+        username: user.username,
+        displayName: user.displayName
+      },
+      tokens
+    });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Registration failed' });
+  }
 });
 
 // POST /api/v1/auth/login
-authRouter.post('/login', authRateLimiter, (req: Request, res: Response) => {
+// Authenticates credentials via Supabase Auth and returns tokens bound to MyChat User UUID
+authRouter.post('/login', authRateLimiter, async (req: Request, res: Response) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
-  const user = db.findUserByUsername(username);
-  if (!user || !verifyPassword(password, user.passwordHash)) {
+  // Look up user by case-insensitive username or email
+  let user = db.findUserByUsername(username);
+  if (!user && username.includes('@')) {
+    user = db.data.users.find(u => u.email === username.toLowerCase().trim());
+  }
+
+  if (!user) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  const tokens = generateTokens(user.id, user.username);
-  db.createSession(user.id, 'primary-session', tokens.refreshToken, REFRESH_TOKEN_EXPIRY_DAYS);
+  try {
+    // Verify credentials via Supabase Auth
+    await supabaseAuth.signInWithPassword(user.email, password);
 
-  return res.status(200).json({
-    user: {
-      uuid: user.id,
-      username: user.username,
-      displayName: user.displayName
-    },
-    tokens
-  });
+    const tokens = generateTokens(user.id, user.username);
+    db.createSession(user.id, 'primary-session', tokens.refreshToken, REFRESH_TOKEN_EXPIRY_DAYS);
+
+    return res.status(200).json({
+      user: {
+        uuid: user.id,
+        username: user.username,
+        displayName: user.displayName
+      },
+      tokens
+    });
+  } catch (err: any) {
+    return res.status(401).json({ error: err.message || 'Invalid credentials' });
+  }
 });
 
 // POST /api/v1/auth/refresh

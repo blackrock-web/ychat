@@ -4,14 +4,35 @@
  * Complies with strict Zero-Knowledge principles:
  * NEVER logs plaintext message contents or private keys.
  * Tracks message lifecycle metadata: clientMessageId, conversationId, 
- * device IDs, sequence numbers, database linkage, and delivery states.
+ * UUID routing, database membership checks, sequence numbers, and delivery states.
+ * Specifically verifies that the database conversation membership check succeeds
+ * when the recipient logs in and retrieves messages.
  */
 
+export type ServerDiagnosticPhase =
+  | 'INGESTION'
+  | 'DB_MEMBERSHIP_CHECK'
+  | 'DB_MEMBERSHIP_VERIFIED'
+  | 'CONVERSATION_LINK'
+  | 'STORED_DB'
+  | 'WS_FORWARD'
+  | 'OFFLINE_HOLD_15MIN'
+  | 'RECIPIENT_LOGIN_SYNC_PULL'
+  | 'RECIPIENT_DB_MEMBERSHIP_CHECK'
+  | 'RECIPIENT_DB_MEMBERSHIP_VERIFIED'
+  | 'MESSAGE_DROPPED_INVALID_SIGNATURE'
+  | 'MESSAGE_DROPPED_TAMPERED'
+  | 'DELIVERY_RECEIPT'
+  | 'DELIVERY_CONFIRMED';
+
 export interface ServerDiagnosticEvent {
-  phase: 'INGESTION' | 'CONVERSATION_LINK' | 'STORED_DB' | 'WS_FORWARD' | 'LOGIN_SYNC_PULL' | 'DELIVERY_RECEIPT';
+  phase: ServerDiagnosticPhase;
+  stage: ServerDiagnosticPhase;
   clientMessageId: string;
   conversationId: string;
   messageId?: string;
+  senderUserId?: string;
+  recipientUserId?: string;
   senderDeviceId?: string;
   recipientDeviceId?: string;
   serverSequence?: number;
@@ -21,11 +42,12 @@ export interface ServerDiagnosticEvent {
 
 class ServerSyncDiagnosticLogger {
   private logBuffer: ServerDiagnosticEvent[] = [];
-  private maxBufferSize = 200;
+  private maxBufferSize = 500;
 
-  log(phase: ServerDiagnosticEvent['phase'], event: Omit<ServerDiagnosticEvent, 'phase' | 'timestamp'>) {
+  log(phase: ServerDiagnosticPhase, event: Omit<ServerDiagnosticEvent, 'phase' | 'stage' | 'timestamp'>) {
     const entry: ServerDiagnosticEvent = {
       phase,
+      stage: phase,
       ...event,
       timestamp: new Date().toISOString()
     };
@@ -39,7 +61,8 @@ class ServerSyncDiagnosticLogger {
     console.log(
       `\x1b[36m[SyncDiagnostic:Server]\x1b[0m \x1b[1m[${entry.phase}]\x1b[0m ` +
       `msgId=${entry.clientMessageId} convId=${entry.conversationId} ` +
-      `senderDev=${entry.senderDeviceId || 'N/A'} recipDev=${entry.recipientDeviceId || 'N/A'}` +
+      `sender=${entry.senderUserId || entry.senderDeviceId || 'N/A'} ` +
+      `recipient=${entry.recipientUserId || entry.recipientDeviceId || 'N/A'}` +
       (entry.serverSequence !== undefined ? ` seq=${entry.serverSequence}` : '') +
       detailsStr
     );
@@ -50,6 +73,14 @@ class ServerSyncDiagnosticLogger {
       return this.logBuffer.slice(-limit);
     }
     return [...this.logBuffer];
+  }
+
+  getLogsForMessage(clientMessageId: string): ServerDiagnosticEvent[] {
+    return this.logBuffer.filter(e => e.clientMessageId === clientMessageId);
+  }
+
+  clear() {
+    this.logBuffer = [];
   }
 }
 

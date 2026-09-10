@@ -94,9 +94,20 @@ export function deriveNextMessageKey(session: RatchetSession, senderDeviceId?: s
 
 export function deriveRecipientMessageKey(
   session: RatchetSession,
-  senderDeviceId: string | undefined,
-  sequence: number
+  senderDeviceIdOrSeq?: string | number,
+  maybeSeq?: number
 ): Uint8Array {
+  let senderDeviceId: string | undefined;
+  let sequence: number;
+
+  if (typeof senderDeviceIdOrSeq === 'number') {
+    sequence = senderDeviceIdOrSeq;
+    senderDeviceId = undefined;
+  } else {
+    senderDeviceId = senderDeviceIdOrSeq;
+    sequence = maybeSeq ?? 1;
+  }
+
   const convKeyBytes = base64ToBytes(session.convKey);
   const label = senderDeviceId
     ? `ychat-msg-step-${senderDeviceId}-${sequence}`

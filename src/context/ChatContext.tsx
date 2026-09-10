@@ -58,9 +58,6 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await clientDb.saveDeviceKeys(keys);
     }
     if (!keys) {
-      keys = await clientDb.getAnySavedDeviceKeys();
-    }
-    if (!keys) {
       keys = generateDeviceKeys(devId, 25);
       await clientDb.saveDeviceKeys(keys);
     }
@@ -175,8 +172,13 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const seed = (user.username === 'alice' || user.username === 'bob' || user.username === 'charlie')
           ? `${user.username}-device-seed-v1`
           : undefined;
-        initDeviceKeys(deviceId, seed).then((keys) => {
+        initDeviceKeys(deviceId, seed).then(async (keys) => {
           if (!isMounted) return;
+          try {
+            await registerDeviceOnServer(token, keys);
+          } catch (e) {
+            console.warn('Device registration sync:', e);
+          }
           syncEngine.setCredentials(token, keys, user.uuid);
           refreshConversations();
           updateQueueCount();
@@ -424,11 +426,11 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('No active conversation or session');
     }
 
-    // 1. Fetch recipient's devices
+    // 1. Fetch recipient's device prekeys for cryptographic handshake
     const devRes = await fetch(`/api/v1/devices/user/${activeConversation.recipientUuid}`, {
       headers: { Authorization: `Bearer ${token}` }
     });
-    if (!devRes.ok) throw new Error('Failed to fetch recipient devices');
+    if (!devRes.ok) throw new Error('Failed to fetch recipient device info');
     const devData = await devRes.json();
     const recipientDevices = devData.devices || [];
 
@@ -436,29 +438,25 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       throw new Error('Recipient has no registered devices yet');
     }
 
-    let sentMsg: DecryptedMessage | null = null;
-
-    for (const recipientDevice of recipientDevices) {
-      // 2. Fetch prekey bundle for recipient device
-      const prekeyRes = await fetch(`/api/v1/devices/${recipientDevice.id}/prekeys`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!prekeyRes.ok) continue;
-      const recipientBundle: PrekeyBundle = await prekeyRes.json();
-
-      // 3. Dispatch encrypted message through sync engine
-      const msg = await syncEngine.sendTextMessage(
-        activeConversation.id,
-        recipientDevice.id,
-        recipientBundle,
-        text
-      );
-      if (!sentMsg) sentMsg = msg;
+    // Authoritative single-device destination: direct UUID-to-UUID messaging (no multi-device fan-out)
+    const primaryDevice = recipientDevices[0];
+    const prekeyRes = await fetch(`/api/v1/devices/${primaryDevice.id}/prekeys`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (!prekeyRes.ok) {
+      throw new Error('Failed to fetch recipient prekey bundle');
     }
+    const recipientBundle: PrekeyBundle = await prekeyRes.json();
 
-    if (!sentMsg) {
-      throw new Error('Failed to establish encrypted delivery channel to recipient devices');
-    }
+    // Dispatch encrypted envelope directly to recipient UUID
+    const sentMsg = await syncEngine.sendTextMessage(
+      activeConversation.id,
+      primaryDevice.id,
+      recipientBundle,
+      text,
+      activeConversation.recipientUuid,
+      true
+    );
 
     // 4. Update UI state immediately
     setMessages((prev) => [...prev, sentMsg!]);

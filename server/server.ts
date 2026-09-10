@@ -3,7 +3,7 @@ import cors from 'cors';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
-import { authRouter, hashPassword } from './routes/auth';
+import { authRouter } from './routes/auth';
 import { usersRouter } from './routes/users';
 import { devicesRouter } from './routes/devices';
 import { conversationsRouter } from './routes/conversations';
@@ -12,91 +12,125 @@ import { syncRouter } from './routes/sync';
 import { invitesRouter } from './routes/invites';
 import { wsManager } from './ws';
 import { db } from './db';
+import { supabaseAuth } from './services/supabaseAuth';
 import { serverSyncDiagnostic } from './syncDiagnostic';
-import { generateDeviceKeys } from '../src/crypto/keys';
+import { generateDeterministicDeviceKeys } from '../src/crypto/keys';
+import { migrateAtRestDevData } from './migrateAtRest';
+
+// Enforce Domain 2 At-Rest Local Storage Migration:
+// Audit and ensure zero unencrypted private keys exist in .data/*.json
+try {
+  const atRestMigration = migrateAtRestDevData();
+  console.log(`[Domain 2 At-Rest Init] Audited ${atRestMigration.scannedFiles.length} files in .data/. Status: ${atRestMigration.status}. Purged ${atRestMigration.privateKeysPurgedCount} forbidden keys.`);
+} catch (err) {
+  console.error('[Domain 2 At-Rest Init] Error migrating at-rest data:', err);
+}
 
 const app = express();
 const server = http.createServer(app);
 
-import { generateDeterministicDeviceKeys } from '../src/crypto/keys';
-
 const PORT = 3000;
 const isProd = process.env.NODE_ENV === 'production';
 
-function seedDemoAccounts() {
-  let userA = db.findUserByUsername('alice');
-  if (!userA) {
-    userA = db.createUser({
-      username: 'alice',
-      email: 'alice@ychat.local',
-      passwordHash: hashPassword('alicePassword123!'),
-      displayName: 'Alice Sterling'
-    });
-  }
-  const devA = generateDeterministicDeviceKeys('dev-alice-primary', 'alice-device-seed-v1', 25);
-  const existingDevA = db.findDeviceById(devA.deviceId);
-  if (!existingDevA) {
-    db.registerDevice({
-      id: devA.deviceId,
-      userId: userA.id,
-      deviceName: 'Alice Macbook Pro',
-      platform: 'desktop',
-      publicSignKey: devA.publicKeys.signingKey,
-      publicDhKey: devA.publicKeys.dhKey,
-      publicKemKey: devA.publicKeys.kemKey
-    });
-  } else {
-    existingDevA.publicSignKey = devA.publicKeys.signingKey;
-    existingDevA.publicDhKey = devA.publicKeys.dhKey;
-    existingDevA.publicKemKey = devA.publicKeys.kemKey;
-  }
-  // Synchronize Alice's prekeys to match deterministic seed
-  (db as any).data.devicePrekeys = ((db as any).data.devicePrekeys || []).filter(
-    (p: any) => p.deviceId !== devA.deviceId
-  );
-  db.savePrekeys(devA.deviceId, devA.oneTimePrekeys.publicKeys);
+async function seedDemoAccounts() {
+  try {
+    let authResA;
+    try {
+      authResA = await supabaseAuth.signUp('alice@ychat.local', 'alicePassword123!');
+    } catch {
+      // already exists in auth
+    }
 
-  let userB = db.findUserByUsername('bob');
-  if (!userB) {
-    userB = db.createUser({
-      username: 'bob',
-      email: 'bob@ychat.local',
-      passwordHash: hashPassword('bobPassword123!'),
-      displayName: 'Bob Vance'
-    });
+    let userA = db.findUserByUsername('alice');
+    if (!userA) {
+      userA = db.createUser({
+        username: 'alice',
+        email: 'alice@ychat.local',
+        displayName: 'Alice Sterling',
+        authUserId: authResA?.authUserId
+      });
+    } else if (!userA.authUserId && authResA?.authUserId) {
+      userA.authUserId = authResA.authUserId;
+      (db as any).persist();
+    }
+
+    const devA = generateDeterministicDeviceKeys('dev-alice-primary', 'alice-device-seed-v1', 25);
+    const existingDevA = db.findDeviceById(devA.deviceId);
+    if (!existingDevA) {
+      db.registerDevice({
+        id: devA.deviceId,
+        userId: userA.id,
+        deviceName: 'Alice Macbook Pro',
+        platform: 'desktop',
+        publicSignKey: devA.publicKeys.signingKey,
+        publicDhKey: devA.publicKeys.dhKey,
+        publicKemKey: devA.publicKeys.kemKey
+      });
+    } else {
+      existingDevA.publicSignKey = devA.publicKeys.signingKey;
+      existingDevA.publicDhKey = devA.publicKeys.dhKey;
+      existingDevA.publicKemKey = devA.publicKeys.kemKey;
+    }
+
+    (db as any).data.devicePrekeys = ((db as any).data.devicePrekeys || []).filter(
+      (p: any) => p.deviceId !== devA.deviceId
+    );
+    db.savePrekeys(devA.deviceId, devA.oneTimePrekeys.publicKeys);
+
+    let authResB;
+    try {
+      authResB = await supabaseAuth.signUp('bob@ychat.local', 'bobPassword123!');
+    } catch {
+      // already exists in auth
+    }
+
+    let userB = db.findUserByUsername('bob');
+    if (!userB) {
+      userB = db.createUser({
+        username: 'bob',
+        email: 'bob@ychat.local',
+        displayName: 'Bob Vance',
+        authUserId: authResB?.authUserId
+      });
+    } else if (!userB.authUserId && authResB?.authUserId) {
+      userB.authUserId = authResB.authUserId;
+      (db as any).persist();
+    }
+
+    const devB = generateDeterministicDeviceKeys('dev-bob-primary', 'bob-device-seed-v1', 25);
+    const existingDevB = db.findDeviceById(devB.deviceId);
+    if (!existingDevB) {
+      db.registerDevice({
+        id: devB.deviceId,
+        userId: userB.id,
+        deviceName: 'Bob Pixel Phone',
+        platform: 'android',
+        publicSignKey: devB.publicKeys.signingKey,
+        publicDhKey: devB.publicKeys.dhKey,
+        publicKemKey: devB.publicKeys.kemKey
+      });
+    } else {
+      existingDevB.publicSignKey = devB.publicKeys.signingKey;
+      existingDevB.publicDhKey = devB.publicKeys.dhKey;
+      existingDevB.publicKemKey = devB.publicKeys.kemKey;
+    }
+
+    (db as any).data.devicePrekeys = ((db as any).data.devicePrekeys || []).filter(
+      (p: any) => p.deviceId !== devB.deviceId
+    );
+    db.savePrekeys(devB.deviceId, devB.oneTimePrekeys.publicKeys);
+
+    // Prune stale/orphaned random test devices for Alice and Bob
+    (db as any).data.devices = (db as any).data.devices.filter(
+      (d: any) => (d.userId !== userA.id || d.id === devA.deviceId) && (d.userId !== userB.id || d.id === devB.deviceId)
+    );
+
+    // Ensure default direct conversation exists between Alice and Bob
+    db.createDirectConversation(userA.id, userB.id);
+    (db as any).persist();
+  } catch (err) {
+    console.error('[Seed Error]:', err);
   }
-  const devB = generateDeterministicDeviceKeys('dev-bob-primary', 'bob-device-seed-v1', 25);
-  const existingDevB = db.findDeviceById(devB.deviceId);
-  if (!existingDevB) {
-    db.registerDevice({
-      id: devB.deviceId,
-      userId: userB.id,
-      deviceName: 'Bob Pixel Phone',
-      platform: 'android',
-      publicSignKey: devB.publicKeys.signingKey,
-      publicDhKey: devB.publicKeys.dhKey,
-      publicKemKey: devB.publicKeys.kemKey
-    });
-  } else {
-    existingDevB.publicSignKey = devB.publicKeys.signingKey;
-    existingDevB.publicDhKey = devB.publicKeys.dhKey;
-    existingDevB.publicKemKey = devB.publicKeys.kemKey;
-  }
-  // Synchronize Bob's prekeys to match deterministic seed
-  (db as any).data.devicePrekeys = ((db as any).data.devicePrekeys || []).filter(
-    (p: any) => p.deviceId !== devB.deviceId
-  );
-  db.savePrekeys(devB.deviceId, devB.oneTimePrekeys.publicKeys);
-
-  // Prune stale/orphaned random test devices for Alice and Bob
-  (db as any).data.devices = (db as any).data.devices.filter(
-    (d: any) => (d.userId !== userA.id || d.id === devA.deviceId) && (d.userId !== userB.id || d.id === devB.deviceId)
-  );
-
-  // Ensure default direct conversation exists between Alice and Bob
-  db.createDirectConversation(userA.id, userB.id);
-
-  (db as any).persist();
 }
 
 seedDemoAccounts();
@@ -118,17 +152,17 @@ app.use('/api/v1/invites', invitesRouter);
 app.get('/api/v1/health', (req, res) => {
   res.json({
     status: 'healthy',
-    service: 'YChat Backend',
+    service: 'YChat Backend (Supabase Auth & UUID-to-UUID Production Architecture)',
     timestamp: new Date().toISOString(),
-    version: '1.0.0',
+    version: '2.0.0',
     cryptoSuite: 'ML-KEM-1024 + ML-DSA-87 + X25519 + ChaCha20-Poly1305 + BLAKE3',
-    e2eeZeroKnowledge: true
+    e2eeZeroKnowledge: true,
+    supabaseConfigured: supabaseAuth.isExternalConfigured()
   });
 });
 
 // Security Audit & Inspection API (Used for programmatic & UI cryptographic verification)
 app.get('/api/v1/security/audit', (req, res) => {
-  // Inspect server storage to prove zero plaintext is held
   const data = (db as any).data;
   const messages = data.messages || [];
 
@@ -152,7 +186,27 @@ app.get('/api/v1/security/audit', (req, res) => {
       aeadCipher: 'ChaCha20-Poly1305 (RFC 8439)',
       kdf: 'HKDF-SHA3-512 (FIPS 202 / RFC 5869)',
       tamperEvidence: 'BLAKE3 Hash Chain',
-      passwordHash: 'Argon2id (RFC 9106)'
+      auth: 'Supabase Auth',
+      atRestCipher: 'AES-256-GCM (Domain 2)'
+    },
+    domains: {
+      domain1_message_transport: {
+        description: 'End-to-End Hybrid Post-Quantum Message Transport',
+        pipeline: 'X25519 + ML-KEM-1024 hybrid key agreement -> HKDF-SHA3-512 -> ChaCha20-Poly1305 AEAD -> ML-DSA-87 signature -> chunking -> TLS 1.3',
+        status: 'active'
+      },
+      domain2_local_at_rest: {
+        description: 'Local At-Rest Storage Encryption for IndexedDB/SQLite/Room and Private Key Material',
+        cipher: 'AES-256-GCM',
+        keyWrapping: {
+          web: 'WebCrypto subtle.wrapKey/unwrapKey (AES-KW) derived via PBKDF2/Argon2id',
+          desktop_tauri: 'OS Keychain (Apple Keychain, Windows Credential Manager/DPAPI, Linux Secret Service)',
+          android: 'Android Keystore hardware-backed AES-256-GCM key (StrongBox / TEE)'
+        },
+        keyIsolation: 'At-rest encryption keys never leave device and are strictly decoupled from Domain 1 message transport keys',
+        status: 'active'
+      },
+      rsaRoleClarification: 'RSA is used only for the TLS certificate chain at the infrastructure layer (or ECDSA certs, preferred) and NEVER for message payloads. RSA has no role in per-message AEAD.'
     }
   });
 });
@@ -160,7 +214,13 @@ app.get('/api/v1/security/audit', (req, res) => {
 // Real-time message synchronization lifecycle diagnostics (Zero-Knowledge: strictly no plaintext or private keys)
 app.get('/api/v1/security/diagnostics', (req, res) => {
   res.json({
-    diagnostics: serverSyncDiagnostic.getRecentLogs(100)
+    diagnostics: serverSyncDiagnostic.getRecentLogs(150)
+  });
+});
+
+app.get('/api/v1/sync/diagnostic/logs', (req, res) => {
+  res.json({
+    logs: serverSyncDiagnostic.getRecentLogs(150)
   });
 });
 
@@ -193,7 +253,7 @@ async function setupFrontend() {
     const distPath = path.resolve(process.cwd(), 'dist');
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get('*', (req, res) => {
+      app.get('{*all}', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });
     }

@@ -41,6 +41,8 @@ export interface HandshakePacket {
 export interface EncryptedEnvelope {
   clientMessageId: string;
   conversationId: string;
+  senderUserId?: string;
+  recipientUserId?: string;
   senderDeviceId: string;
   recipientDeviceId: string;
   ciphertext: string;     // Base64 ChaCha20-Poly1305 ciphertext with tag
@@ -54,6 +56,7 @@ export interface EncryptedEnvelope {
   chunkIndex?: number;
   chunkCount?: number;
   createdAt?: string;
+  allowOfflineStorage?: boolean;
 }
 
 export interface EncryptedChunk {
