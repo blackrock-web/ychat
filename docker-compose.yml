@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ychat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ychat_user
+      POSTGRES_PASSWORD: ychat_secure_password
+      POSTGRES_DB: ychat_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./server/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ychat_user -d ychat_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  ychat-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ychat-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://ychat_user:ychat_secure_password@postgres:5432/ychat_db
+      JWT_SECRET: super_secure_random_jwt_secret_for_local_development_only
+      ENVIRONMENT: development
+      API_BASE_URL: http://localhost:3000
+      WS_BASE_URL: ws://localhost:3000
+
+volumes:
+  pgdata:

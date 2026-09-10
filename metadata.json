@@ -1,0 +1,6 @@
+{
+  "name": "YChat",
+  "description": "Privacy-focused end-to-end encrypted messaging platform featuring hybrid post-quantum cryptography (ML-KEM-1024, ML-DSA-87, X25519, ChaCha20-Poly1305), local offline cache, and real-time synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
