@@ -79,7 +79,7 @@ export class WebAtRestProvider implements AtRestStorageDriver {
       try {
         this.dek = await crypto.subtle.unwrapKey(
           'raw',
-          wrappedDekBytes,
+          wrappedDekBytes as unknown as BufferSource,
           wrappingKey,
           'AES-KW',
           { name: 'AES-GCM', length: 256 },
@@ -153,7 +153,7 @@ export class WebAtRestProvider implements AtRestStorageDriver {
     // Default: WebCrypto native PBKDF2 (100,000 iterations of SHA-256)
     const baseKey = await crypto.subtle.importKey(
       'raw',
-      secretBytes,
+      secretBytes as unknown as BufferSource,
       'PBKDF2',
       false,
       ['deriveKey']
@@ -162,7 +162,7 @@ export class WebAtRestProvider implements AtRestStorageDriver {
     return await crypto.subtle.deriveKey(
       {
         name: 'PBKDF2',
-        salt,
+        salt: salt as unknown as BufferSource,
         iterations: 100000,
         hash: 'SHA-256'
       },
@@ -215,9 +215,9 @@ export class WebAtRestProvider implements AtRestStorageDriver {
     const ciphertextBytes = base64ToBytes(record.ciphertext);
 
     const decryptedBuffer = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
       this.dek,
-      ciphertextBytes
+      ciphertextBytes as unknown as BufferSource
     );
 
     const decryptedText = new TextDecoder().decode(decryptedBuffer);

@@ -62,7 +62,7 @@ export class AndroidAtRestProvider implements AtRestStorageDriver {
       userId,
       platform: 'android',
       salt: bytesToBase64(crypto.getRandomValues(new Uint8Array(16))),
-      wrappedDek: bytesToBase64(rawDekBytes),
+      wrappedDek: bytesToBase64(new Uint8Array(rawDekBytes)),
       kdf: 'PBKDF2-SHA256',
       createdAt: Date.now(),
       keyId: `dek-android-hw-${userId.slice(0, 8)}-${Date.now()}`
@@ -107,9 +107,9 @@ export class AndroidAtRestProvider implements AtRestStorageDriver {
     const ciphertextBytes = base64ToBytes(record.ciphertext);
 
     const decryptedBuffer = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
       this.dek,
-      ciphertextBytes
+      ciphertextBytes as unknown as BufferSource
     );
 
     const decryptedText = new TextDecoder().decode(decryptedBuffer);

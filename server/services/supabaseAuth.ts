@@ -200,6 +200,63 @@ class IsolatedSupabaseAuthService {
     };
   }
 
+  async changePassword(email: string, oldPassword: string, newPassword: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (newPassword.length < 8) {
+      throw new Error('New password must be at least 8 characters');
+    }
+
+    if (externalSupabase) {
+      // Re-authenticate first
+      const { error: signInErr } = await externalSupabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password: oldPassword
+      });
+      if (signInErr) {
+        throw new Error('Current password is incorrect');
+      }
+      const { error: updateErr } = await externalSupabase.auth.updateUser({
+        password: newPassword
+      });
+      if (updateErr) {
+        throw new Error(updateErr.message || 'Failed to update password');
+      }
+      return;
+    }
+
+    const record = this.authUsers.get(normalizedEmail);
+    if (!record || !this.verifyPassword(oldPassword, record.passwordHash)) {
+      throw new Error('Current password is incorrect');
+    }
+
+    // Re-hash with Argon2id
+    record.passwordHash = this.hashPassword(newPassword);
+    this.authUsers.set(record.id, record);
+    this.authUsers.set(normalizedEmail, record);
+    this.persist();
+  }
+
+  async deleteAccount(email: string): Promise<void> {
+    const normalizedEmail = email.toLowerCase().trim();
+
+    if (externalSupabase) {
+      try {
+        const { data } = await externalSupabase.auth.getUser();
+        if (data?.user?.id) {
+          await externalSupabase.auth.admin.deleteUser(data.user.id);
+        }
+      } catch {}
+    }
+
+    const record = this.authUsers.get(normalizedEmail);
+    if (record) {
+      this.authUsers.delete(record.id);
+      this.authUsers.delete(normalizedEmail);
+      this.persist();
+    }
+  }
+
   verifyToken(token: string): { authUserId: string; email: string } {
     try {
       const payload = jwt.verify(token, JWT_SECRET) as any;

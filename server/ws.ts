@@ -416,6 +416,28 @@ class WebSocketManager {
     });
   }
 
+  sendNotificationToUser(userId: string, notification: {
+    type: 'message' | 'device_linked' | 'safety_changed' | 'conversation_request';
+    title: string;
+    description: string;
+    data?: any;
+  }): boolean {
+    const socket = this.userSockets.get(userId);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'notification',
+        notification: {
+          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          timestamp: Date.now(),
+          read: false,
+          ...notification
+        }
+      }));
+      return true;
+    }
+    return false;
+  }
+
   isUserOnline(userId: string): boolean {
     const socket = this.userSockets.get(userId);
     return !!socket && socket.readyState === WebSocket.OPEN;

@@ -2,6 +2,7 @@ import express, { Response } from 'express';
 import { db } from '../db';
 import { requireAuth, AuthenticatedRequest } from './auth';
 import { PostgresRLSQueryLayer, requireConversationMember } from '../middleware/rls';
+import { wsManager } from '../ws';
 
 export const conversationsRouter = express.Router();
 
@@ -30,6 +31,18 @@ const handleCreateConversation = (req: AuthenticatedRequest, res: Response) => {
   }
 
   const conv = db.createDirectConversation(userId, recipientUuid);
+
+  // Push notification for incoming conversation request
+  wsManager.sendNotificationToUser(recipientUuid, {
+    type: 'conversation_request',
+    title: 'New Conversation Request',
+    description: `@${req.user!.username} started a secure E2EE chat with you`,
+    data: {
+      conversationId: conv.id,
+      senderUuid: userId,
+      senderUsername: req.user!.username
+    }
+  });
 
   return res.status(200).json({
     conversationId: conv.id,

@@ -202,3 +202,38 @@ authRouter.post('/refresh', (req: Request, res: Response) => {
     tokens: newTokens
   });
 });
+
+// POST /api/v1/auth/change-password
+authRouter.post('/change-password', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required' });
+  }
+
+  const user = db.findUserById(req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  try {
+    await supabaseAuth.changePassword(user.email, currentPassword, newPassword);
+    return res.status(200).json({ status: 'password_updated' });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message || 'Failed to change password' });
+  }
+});
+
+// POST /api/v1/auth/delete-account
+authRouter.post('/delete-account', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const user = db.findUserById(req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  try {
+    await supabaseAuth.deleteAccount(user.email);
+    db.deleteUser(user.id);
+    return res.status(200).json({ status: 'account_deleted' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message || 'Failed to delete account' });
+  }
+});

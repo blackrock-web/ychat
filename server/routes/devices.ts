@@ -1,6 +1,7 @@
 import express, { Response } from 'express';
 import { db } from '../db';
 import { requireAuth, AuthenticatedRequest } from './auth';
+import { wsManager } from '../ws';
 
 export const devicesRouter = express.Router();
 
@@ -26,6 +27,14 @@ devicesRouter.post('/register', requireAuth, (req: AuthenticatedRequest, res: Re
   if (Array.isArray(oneTimePrekeys) && oneTimePrekeys.length > 0) {
     db.savePrekeys(deviceId, oneTimePrekeys);
   }
+
+  // Push notification for linked device
+  wsManager.sendNotificationToUser(userId, {
+    type: 'device_linked',
+    title: 'New Device Linked',
+    description: `${device.deviceName} (${device.platform}) was added to your account`,
+    data: { deviceId: device.id, platform: device.platform }
+  });
 
   return res.status(201).json({
     status: 'registered',

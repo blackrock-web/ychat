@@ -41,6 +41,7 @@ export class SyncEngine {
   private messageListeners: Array<(msg: DecryptedMessage) => void> = [];
   private receiptListeners: Array<(clientMsgId: string, status: DeliveryStatus) => void> = [];
   private presenceListeners: Array<(userUuid: string, status: 'online' | 'offline') => void> = [];
+  private notificationListeners: Array<(notif: any) => void> = [];
   private token: string | null = null;
   private deviceKeys: DeviceKeyBundle | null = null;
   private userUuid: string | null = null;
@@ -115,6 +116,13 @@ export class SyncEngine {
     };
   }
 
+  onNotification(cb: (notif: any) => void) {
+    this.notificationListeners.push(cb);
+    return () => {
+      this.notificationListeners = this.notificationListeners.filter(l => l !== cb);
+    };
+  }
+
   private setConnectionState(state: ConnectionState) {
     this.connectionState = state;
     this.connectionListeners.forEach(cb => cb(state));
@@ -167,6 +175,8 @@ export class SyncEngine {
             await this.handleReceipt(data.clientMessageId, data.status);
           } else if (data.type === 'presence') {
             this.presenceListeners.forEach(cb => cb(data.userUuid, data.status));
+          } else if (data.type === 'notification') {
+            this.notificationListeners.forEach(cb => cb(data.notification));
           }
         } catch (err) {
           console.error('[SyncEngine] WS message parse error:', err);

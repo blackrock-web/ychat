@@ -10,6 +10,9 @@ export interface DBUser {
   usernameNormalized: string; // Enforces case-insensitive uniqueness (alice == ALICE)
   email: string;
   displayName: string;
+  avatarUrl?: string;
+  about?: string;
+  blockedUserIds?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -250,19 +253,90 @@ class StorageEngine {
   }
 
   /**
-   * Case-insensitive search returning public profile attributes (UUID, username, displayName)
+   * Case-insensitive search returning public profile attributes (UUID, username, displayName, avatarUrl, about)
    * Strictly no email, secrets, or internal auth identifiers.
    */
-  searchUsers(query: string, excludeUserId?: string): Array<{ uuid: string; username: string; displayName: string }> {
+  searchUsers(query: string, excludeUserId?: string): Array<{ uuid: string; username: string; displayName: string; avatarUrl?: string; about?: string }> {
     const q = query.toLowerCase().trim();
     if (!q) return [];
     return this.data.users
-      .filter(u => u.id !== excludeUserId && (u.usernameNormalized === q || u.usernameNormalized.startsWith(q)))
+      .filter(u => u.id !== excludeUserId && (u.usernameNormalized === q || u.usernameNormalized.startsWith(q) || u.displayName.toLowerCase().includes(q)))
       .map(u => ({
         uuid: u.id,
         username: u.username,
-        displayName: u.displayName
+        displayName: u.displayName,
+        avatarUrl: u.avatarUrl,
+        about: u.about
       }));
+  }
+
+  updateUserProfile(userId: string, updates: { displayName?: string; about?: string; avatarUrl?: string }): DBUser | undefined {
+    const user = this.findUserById(userId);
+    if (!user) return undefined;
+
+    if (updates.displayName !== undefined) {
+      user.displayName = updates.displayName.trim() || user.username;
+    }
+    if (updates.about !== undefined) {
+      user.about = updates.about.trim();
+    }
+    if (updates.avatarUrl !== undefined) {
+      user.avatarUrl = updates.avatarUrl;
+    }
+    user.updatedAt = new Date().toISOString();
+    this.persist();
+    return user;
+  }
+
+  blockUser(userId: string, targetUserId: string): void {
+    const user = this.findUserById(userId);
+    if (!user) return;
+    user.blockedUserIds = user.blockedUserIds || [];
+    if (!user.blockedUserIds.includes(targetUserId)) {
+      user.blockedUserIds.push(targetUserId);
+      this.persist();
+    }
+  }
+
+  unblockUser(userId: string, targetUserId: string): void {
+    const user = this.findUserById(userId);
+    if (!user || !user.blockedUserIds) return;
+    user.blockedUserIds = user.blockedUserIds.filter(id => id !== targetUserId);
+    this.persist();
+  }
+
+  getBlockedUsers(userId: string): Array<{ uuid: string; username: string; displayName: string; avatarUrl?: string }> {
+    const user = this.findUserById(userId);
+    if (!user || !user.blockedUserIds || user.blockedUserIds.length === 0) return [];
+    return user.blockedUserIds
+      .map(id => this.findUserById(id))
+      .filter((u): u is DBUser => !!u)
+      .map(u => ({
+        uuid: u.id,
+        username: u.username,
+        displayName: u.displayName,
+        avatarUrl: u.avatarUrl
+      }));
+  }
+
+  deleteUser(userId: string): boolean {
+    const userIndex = this.data.users.findIndex(u => u.id === userId);
+    if (userIndex === -1) return false;
+
+    // Remove user
+    this.data.users.splice(userIndex, 1);
+
+    // Revoke and remove devices
+    this.data.devices = this.data.devices.filter(d => d.userId !== userId);
+
+    // Remove sessions
+    this.data.sessions = this.data.sessions.filter(s => s.userId !== userId);
+
+    // Remove conversation membership
+    this.data.conversationMembers = this.data.conversationMembers.filter(m => m.userId !== userId);
+
+    this.persist();
+    return true;
   }
 
   // ==========================================

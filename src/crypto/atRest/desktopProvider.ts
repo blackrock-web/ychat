@@ -52,7 +52,7 @@ export class DesktopAtRestProvider implements AtRestStorageDriver {
 
     const wrappingKey = await crypto.subtle.importKey(
       'raw',
-      rawWrappingKey,
+      rawWrappingKey as unknown as BufferSource,
       { name: 'AES-KW', length: 256 },
       false,
       ['wrapKey', 'unwrapKey']
@@ -161,9 +161,9 @@ export class DesktopAtRestProvider implements AtRestStorageDriver {
     const ciphertextBytes = base64ToBytes(record.ciphertext);
 
     const decryptedBuffer = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv },
+      { name: 'AES-GCM', iv: iv as unknown as BufferSource },
       this.dek,
-      ciphertextBytes
+      ciphertextBytes as unknown as BufferSource
     );
 
     const decryptedText = new TextDecoder().decode(decryptedBuffer);

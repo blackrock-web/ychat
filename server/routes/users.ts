@@ -28,8 +28,60 @@ usersRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) =
   return res.status(200).json({
     uuid: user.id,
     username: user.username,
-    displayName: user.displayName
+    displayName: user.displayName,
+    avatarUrl: user.avatarUrl,
+    about: user.about,
+    createdAt: user.createdAt
   });
+});
+
+// PUT /api/v1/users/profile
+usersRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { displayName, about, avatarUrl } = req.body;
+
+  const updated = db.updateUserProfile(req.user.userId, { displayName, about, avatarUrl });
+  if (!updated) return res.status(404).json({ error: 'User not found' });
+
+  return res.status(200).json({
+    status: 'updated',
+    user: {
+      uuid: updated.id,
+      username: updated.username,
+      displayName: updated.displayName,
+      avatarUrl: updated.avatarUrl,
+      about: updated.about
+    }
+  });
+});
+
+// GET /api/v1/users/blocked
+usersRouter.get('/blocked', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const blocked = db.getBlockedUsers(req.user.userId);
+  return res.status(200).json({ blocked });
+});
+
+// POST /api/v1/users/block
+usersRouter.post('/block', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { targetUuid } = req.body;
+  if (!targetUuid || typeof targetUuid !== 'string') {
+    return res.status(400).json({ error: 'targetUuid required' });
+  }
+  db.blockUser(req.user.userId, targetUuid);
+  return res.status(200).json({ status: 'blocked', targetUuid });
+});
+
+// POST /api/v1/users/unblock
+usersRouter.post('/unblock', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { targetUuid } = req.body;
+  if (!targetUuid || typeof targetUuid !== 'string') {
+    return res.status(400).json({ error: 'targetUuid required' });
+  }
+  db.unblockUser(req.user.userId, targetUuid);
+  return res.status(200).json({ status: 'unblocked', targetUuid });
 });
 
 // GET /api/v1/users/:uuid
@@ -43,7 +95,9 @@ usersRouter.get('/:uuid', requireAuth, (req: AuthenticatedRequest, res: Response
   return res.status(200).json({
     uuid: user.id,
     username: user.username,
-    displayName: user.displayName
+    displayName: user.displayName,
+    avatarUrl: user.avatarUrl,
+    about: user.about
   });
 });
 

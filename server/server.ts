@@ -253,7 +253,7 @@ async function setupFrontend() {
     const distPath = path.resolve(process.cwd(), 'dist');
     if (fs.existsSync(distPath)) {
       app.use(express.static(distPath));
-      app.get('{*all}', (req, res) => {
+      app.get('*all', (req, res) => {
         res.sendFile(path.join(distPath, 'index.html'));
       });
     }
