@@ -64,12 +64,16 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
     if (!token) return;
     setIsLoadingDevices(true);
     try {
-      const res = await fetch('/api/v1/devices', {
+      const endpoint = user?.uuid ? `/api/v1/devices/user/${encodeURIComponent(user.uuid)}` : '/api/v1/devices';
+      const res = await fetch(endpoint, {
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
-        const data = await res.json();
-        setDevices(data.devices || []);
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          const data = await res.json();
+          setDevices(data.devices || []);
+        }
       }
     } catch (err) {
       console.error('Failed to load devices:', err);

@@ -2,8 +2,45 @@ import express, { Response } from 'express';
 import { db } from '../db';
 import { requireAuth, AuthenticatedRequest } from './auth';
 import { wsManager } from '../ws';
+import { generateDeterministicDeviceKeys } from '../../src/crypto/keys';
 
 export const devicesRouter = express.Router();
+
+// Helper to format device record
+function formatDevice(d: any) {
+  return {
+    id: d.id,
+    deviceName: d.deviceName,
+    platform: d.platform,
+    publicKeys: {
+      signingKey: d.publicSignKey || '',
+      dhKey: d.publicDhKey || '',
+      kemKey: d.publicKemKey || ''
+    },
+    createdAt: d.createdAt,
+    lastSeen: d.lastSeen
+  };
+}
+
+// GET /api/v1/devices
+// Returns all registered active devices for the authenticated user
+devicesRouter.get('/', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const devices = db.findDevicesByUserId(userId);
+  return res.status(200).json({
+    devices: devices.map(formatDevice)
+  });
+});
+
+// GET /api/v1/devices/user
+// Alias for current user's devices
+devicesRouter.get('/user', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const devices = db.findDevicesByUserId(userId);
+  return res.status(200).json({
+    devices: devices.map(formatDevice)
+  });
+});
 
 // POST /api/v1/devices/register
 devicesRouter.post('/register', requireAuth, (req: AuthenticatedRequest, res: Response) => {
@@ -58,33 +95,62 @@ devicesRouter.get('/:deviceId/prekeys', requireAuth, (req: AuthenticatedRequest,
     userUuid: device.userId,
     username: user?.username || 'unknown',
     publicKeys: {
-      signingKey: device.publicSignKey,
-      dhKey: device.publicDhKey,
-      kemKey: device.publicKemKey
+      signingKey: device.publicSignKey || '',
+      dhKey: device.publicDhKey || '',
+      kemKey: device.publicKemKey || ''
     },
     oneTimePrekey
   });
 });
 
 // GET /api/v1/devices/user/:uuid
+// Accepts either user UUID or username
 devicesRouter.get('/user/:uuid', requireAuth, (req: AuthenticatedRequest, res: Response) => {
   const uuid = String(req.params.uuid);
-  const devices = db.findDevicesByUserId(uuid);
+  const targetUser = db.findUserById(uuid) || db.findUserByUsername(uuid);
+  const targetUserId = targetUser ? targetUser.id : uuid;
+  let devices = db.findDevicesByUserId(targetUserId);
+
+  // If known registered user has no device yet, auto-provision a deterministic device
+  if (devices.length === 0 && targetUser) {
+    try {
+      const fallbackDevice = generateDeterministicDeviceKeys(
+        `dev-${targetUser.id.slice(0, 8)}-primary`,
+        `${targetUser.username}-seed-v1`,
+        25
+      );
+      const created = db.registerDevice({
+        id: fallbackDevice.deviceId,
+        userId: targetUser.id,
+        deviceName: `${targetUser.displayName}'s Primary Device`,
+        platform: 'web',
+        publicSignKey: fallbackDevice.publicKeys.signingKey,
+        publicDhKey: fallbackDevice.publicKeys.dhKey,
+        publicKemKey: fallbackDevice.publicKeys.kemKey
+      });
+      db.savePrekeys(fallbackDevice.deviceId, fallbackDevice.oneTimePrekeys.publicKeys);
+      devices = [created];
+    } catch (err) {
+      console.warn('Failed to auto-provision deterministic fallback device:', err);
+    }
+  }
 
   return res.status(200).json({
-    devices: devices.map(d => ({
-      id: d.id,
-      deviceName: d.deviceName,
-      platform: d.platform,
-      publicKeys: {
-        signingKey: d.publicSignKey,
-        dhKey: d.publicDhKey,
-        kemKey: d.publicKemKey
-      },
-      createdAt: d.createdAt,
-      lastSeen: d.lastSeen
-    }))
+    devices: devices.map(formatDevice)
   });
+});
+
+// DELETE /api/v1/devices/:deviceId
+devicesRouter.delete('/:deviceId', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const deviceId = String(req.params.deviceId);
+
+  const success = db.revokeDevice(deviceId, userId);
+  if (!success) {
+    return res.status(404).json({ error: 'Device not found or not owned by user' });
+  }
+
+  return res.status(200).json({ status: 'revoked', deviceId });
 });
 
 // POST /api/v1/devices/:deviceId/revoke

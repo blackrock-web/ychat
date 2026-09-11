@@ -120,9 +120,54 @@ async function seedDemoAccounts() {
     );
     db.savePrekeys(devB.deviceId, devB.oneTimePrekeys.publicKeys);
 
-    // Prune stale/orphaned random test devices for Alice and Bob
+    // Charlie account and device seeding
+    let authResC;
+    try {
+      authResC = await supabaseAuth.signUp('charlie@ychat.local', 'charliePassword123!');
+    } catch {}
+
+    let userC = db.findUserByUsername('charlie');
+    if (!userC) {
+      userC = db.createUser({
+        username: 'charlie',
+        email: 'charlie@ychat.local',
+        displayName: 'Charlie Davis',
+        authUserId: authResC?.authUserId
+      });
+    } else if (!userC.authUserId && authResC?.authUserId) {
+      userC.authUserId = authResC.authUserId;
+      (db as any).persist();
+    }
+
+    const devC = generateDeterministicDeviceKeys('dev-charlie-primary', 'charlie-device-seed-v1', 25);
+    const existingDevC = db.findDeviceById(devC.deviceId);
+    if (!existingDevC) {
+      db.registerDevice({
+        id: devC.deviceId,
+        userId: userC.id,
+        deviceName: 'Charlie Linux Workstation',
+        platform: 'desktop',
+        publicSignKey: devC.publicKeys.signingKey,
+        publicDhKey: devC.publicKeys.dhKey,
+        publicKemKey: devC.publicKeys.kemKey
+      });
+    } else {
+      existingDevC.publicSignKey = devC.publicKeys.signingKey;
+      existingDevC.publicDhKey = devC.publicKeys.dhKey;
+      existingDevC.publicKemKey = devC.publicKeys.kemKey;
+    }
+
+    (db as any).data.devicePrekeys = ((db as any).data.devicePrekeys || []).filter(
+      (p: any) => p.deviceId !== devC.deviceId
+    );
+    db.savePrekeys(devC.deviceId, devC.oneTimePrekeys.publicKeys);
+
+    // Prune stale/orphaned random test devices for Alice, Bob, and Charlie
     (db as any).data.devices = (db as any).data.devices.filter(
-      (d: any) => (d.userId !== userA.id || d.id === devA.deviceId) && (d.userId !== userB.id || d.id === devB.deviceId)
+      (d: any) =>
+        (d.userId !== userA.id || d.id === devA.deviceId) &&
+        (d.userId !== userB.id || d.id === devB.deviceId) &&
+        (d.userId !== userC.id || d.id === devC.deviceId)
     );
 
     // Ensure default direct conversation exists between Alice and Bob

@@ -311,9 +311,23 @@ class ClientStorage {
     });
   }
 
+  private async ensureAtRestUnlocked(): Promise<boolean> {
+    if (this.atRestDriver?.isUnlocked()) return true;
+    if (this.activeUserId) {
+      try {
+        if (!this.atRestDriver) this.atRestDriver = createAtRestDriver();
+        await this.atRestDriver.initialize(this.activeUserId);
+        return this.atRestDriver.isUnlocked();
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
   async getDeviceKeys(deviceId: string): Promise<DeviceKeyBundle | null> {
     const mem = this.memoryStore.deviceKeys.get(deviceId);
-    if (mem) return mem;
+    if (mem && mem.publicKeys && mem.privateKeys) return mem;
 
     const result = await this.runTransaction('deviceKeys', 'readonly', (store) => {
       return new Promise<any>((resolve) => {
@@ -324,24 +338,35 @@ class ClientStorage {
     });
 
     if (result) {
-      let resolved: DeviceKeyBundle = result;
-      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
-        try {
-          resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
-        } catch (err) {
-          console.error('Failed to decrypt device keys with at-rest key:', err);
+      let resolved: DeviceKeyBundle | null = null;
+      if (isEncryptedAtRest(result)) {
+        await this.ensureAtRestUnlocked();
+        if (this.atRestDriver?.isUnlocked()) {
+          try {
+            resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
+          } catch (err) {
+            console.error('Failed to decrypt device keys with at-rest key:', err);
+            return null;
+          }
+        } else {
           return null;
         }
+      } else {
+        resolved = result;
       }
-      this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
-      return resolved;
+
+      if (resolved && resolved.publicKeys && resolved.privateKeys) {
+        this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
+        return resolved;
+      }
+      return null;
     }
     return null;
   }
 
   async getAnySavedDeviceKeys(): Promise<DeviceKeyBundle | null> {
-    if (this.memoryStore.deviceKeys.size > 0) {
-      return this.memoryStore.deviceKeys.values().next().value || null;
+    for (const mem of this.memoryStore.deviceKeys.values()) {
+      if (mem && mem.publicKeys && mem.privateKeys) return mem;
     }
 
     const result = await this.runTransaction('deviceKeys', 'readonly', (store) => {
@@ -353,17 +378,28 @@ class ClientStorage {
     });
 
     if (result) {
-      let resolved: DeviceKeyBundle = result;
-      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
-        try {
-          resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
-        } catch (err) {
-          console.error('Failed to decrypt device keys with at-rest key:', err);
+      let resolved: DeviceKeyBundle | null = null;
+      if (isEncryptedAtRest(result)) {
+        await this.ensureAtRestUnlocked();
+        if (this.atRestDriver?.isUnlocked()) {
+          try {
+            resolved = await this.atRestDriver.decryptPayload<DeviceKeyBundle>(result);
+          } catch (err) {
+            console.error('Failed to decrypt device keys with at-rest key:', err);
+            return null;
+          }
+        } else {
           return null;
         }
+      } else {
+        resolved = result;
       }
-      this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
-      return resolved;
+
+      if (resolved && resolved.publicKeys && resolved.privateKeys) {
+        this.memoryStore.deviceKeys.set(resolved.deviceId, resolved);
+        return resolved;
+      }
+      return null;
     }
     return null;
   }
@@ -398,7 +434,7 @@ class ClientStorage {
 
   async getSession(sessionId: string): Promise<RatchetSession | null> {
     const mem = this.memoryStore.sessions.get(sessionId);
-    if (mem) return mem;
+    if (mem && (mem.masterSecret || mem.sessionKey)) return mem;
 
     const result = await this.runTransaction('sessions', 'readonly', (store) => {
       return new Promise<any>((resolve) => {
@@ -409,17 +445,28 @@ class ClientStorage {
     });
 
     if (result) {
-      let resolved: RatchetSession = result;
-      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
-        try {
-          resolved = await this.atRestDriver.decryptPayload<RatchetSession>(result);
-        } catch (err) {
-          console.error('Failed to decrypt session with at-rest key:', err);
+      let resolved: RatchetSession | null = null;
+      if (isEncryptedAtRest(result)) {
+        await this.ensureAtRestUnlocked();
+        if (this.atRestDriver?.isUnlocked()) {
+          try {
+            resolved = await this.atRestDriver.decryptPayload<RatchetSession>(result);
+          } catch (err) {
+            console.error('Failed to decrypt session with at-rest key:', err);
+            return null;
+          }
+        } else {
           return null;
         }
+      } else {
+        resolved = result;
       }
-      this.memoryStore.sessions.set(resolved.sessionId, resolved);
-      return resolved;
+
+      if (resolved && resolved.sessionId) {
+        this.memoryStore.sessions.set(resolved.sessionId, resolved);
+        return resolved;
+      }
+      return null;
     }
     return null;
   }
@@ -557,17 +604,28 @@ class ClientStorage {
     });
 
     if (result) {
-      let resolved: DecryptedMessage = result;
-      if (isEncryptedAtRest(result) && this.atRestDriver?.isUnlocked()) {
-        try {
-          resolved = await this.atRestDriver.decryptPayload<DecryptedMessage>(result);
-        } catch (err) {
-          console.error('Failed to decrypt message at rest:', err);
+      let resolved: DecryptedMessage | null = null;
+      if (isEncryptedAtRest(result)) {
+        await this.ensureAtRestUnlocked();
+        if (this.atRestDriver?.isUnlocked()) {
+          try {
+            resolved = await this.atRestDriver.decryptPayload<DecryptedMessage>(result);
+          } catch (err) {
+            console.error('Failed to decrypt message at rest:', err);
+            return null;
+          }
+        } else {
           return null;
         }
+      } else {
+        resolved = result;
       }
-      this.memoryStore.messages.set(resolved.clientMessageId, resolved);
-      return resolved;
+
+      if (resolved && resolved.clientMessageId) {
+        this.memoryStore.messages.set(resolved.clientMessageId, resolved);
+        return resolved;
+      }
+      return null;
     }
     return null;
   }
@@ -594,16 +652,19 @@ class ClientStorage {
     });
 
     if (dbResult && dbResult.length > 0) {
+      await this.ensureAtRestUnlocked();
       const decryptedList: DecryptedMessage[] = [];
       for (const raw of dbResult) {
-        if (isEncryptedAtRest(raw) && this.atRestDriver?.isUnlocked()) {
-          try {
-            const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(raw);
-            decryptedList.push(dec);
-          } catch (err) {
-            console.warn('Failed to decrypt at-rest message record:', err);
+        if (isEncryptedAtRest(raw)) {
+          if (this.atRestDriver?.isUnlocked()) {
+            try {
+              const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(raw);
+              if (dec && dec.clientMessageId) decryptedList.push(dec);
+            } catch (err) {
+              console.warn('Failed to decrypt at-rest message record:', err);
+            }
           }
-        } else {
+        } else if (raw && raw.clientMessageId) {
           decryptedList.push(raw as DecryptedMessage);
         }
       }

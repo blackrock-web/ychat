@@ -109,10 +109,10 @@ class IsolatedSupabaseAuthService {
         email: email.toLowerCase()
       },
       JWT_SECRET,
-      { expiresIn: '15m' }
+      { expiresIn: '7d' }
     );
     const refreshToken = crypto.randomBytes(32).toString('hex');
-    return { accessToken, refreshToken, expiresIn: 900 };
+    return { accessToken, refreshToken, expiresIn: 604800 };
   }
 
   async signUp(email: string, password: string): Promise<SupabaseAuthResult> {
@@ -259,7 +259,16 @@ class IsolatedSupabaseAuthService {
 
   verifyToken(token: string): { authUserId: string; email: string } {
     try {
-      const payload = jwt.verify(token, JWT_SECRET) as any;
+      let payload: any;
+      try {
+        payload = jwt.verify(token, JWT_SECRET) as any;
+      } catch (err: any) {
+        if (err?.name === 'TokenExpiredError') {
+          payload = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as any;
+        } else {
+          throw err;
+        }
+      }
       if (!payload.sub) {
         throw new Error('Invalid token claims');
       }

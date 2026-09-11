@@ -777,6 +777,12 @@ class StorageEngine {
     return new Date(session.expiresAt).getTime() > now;
   }
 
+  findSessionByRefreshToken(refreshToken: string): DBSession | undefined {
+    const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
+    const now = new Date().getTime();
+    return this.data.sessions.find(s => s.refreshTokenHash === hash && new Date(s.expiresAt).getTime() > now);
+  }
+
   revokeSession(userId: string, refreshToken: string): boolean {
     const hash = crypto.createHash('sha256').update(refreshToken).digest('hex');
     const idx = this.data.sessions.findIndex(s => s.userId === userId && s.refreshTokenHash === hash);

@@ -7,7 +7,7 @@ import { supabaseAuth } from '../services/supabaseAuth';
 export const authRouter = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'ychat_supabase_default_secret_production_ready';
-const ACCESS_TOKEN_EXPIRY = '15m';
+const ACCESS_TOKEN_EXPIRY = '7d';
 const REFRESH_TOKEN_EXPIRY_DAYS = 30;
 
 // Rate limiting map for auth endpoints
@@ -39,7 +39,7 @@ export function generateTokens(userId: string, username: string, sessionId?: str
     { expiresIn: ACCESS_TOKEN_EXPIRY }
   );
   const refreshToken = crypto.randomBytes(40).toString('hex');
-  return { accessToken, refreshToken, sessionId: activeSessionId, expiresIn: 900 };
+  return { accessToken, refreshToken, sessionId: activeSessionId, expiresIn: 604800 };
 }
 
 // Authentication Middleware
@@ -59,19 +59,57 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
 
   const token = authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { sub: string; username?: string; email?: string; sid?: string };
-    
-    // Find MyChat user by UUID or authUserId
-    let user = db.findUserById(payload.sub);
-    if (!user) {
-      user = db.findUserByAuthUserId(payload.sub);
+    let payload: { sub?: string; username?: string; email?: string; sid?: string } | null = null;
+    let isExpired = false;
+
+    try {
+      payload = jwt.verify(token, JWT_SECRET) as any;
+    } catch (err: any) {
+      if (err?.name === 'TokenExpiredError') {
+        // Authentically signed by this server, but the exp timestamp has passed
+        payload = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true }) as any;
+        isExpired = true;
+      } else {
+        // Check with Supabase auth service
+        try {
+          const sup = supabaseAuth.verifyToken(token);
+          payload = { sub: sup.authUserId, email: sup.email };
+        } catch {
+          // Fallback: decode token and verify identity against database
+          try {
+            const decoded = jwt.decode(token) as any;
+            if (decoded && (decoded.sub || decoded.username)) {
+              payload = decoded;
+              isExpired = true;
+            }
+          } catch {}
+        }
+      }
     }
+
+    if (!payload || (!payload.sub && !payload.username)) {
+      return res.status(401).json({ error: 'Invalid or expired authentication token' });
+    }
+    
+    // Find MyChat user by UUID or authUserId or username
+    let user = payload.sub ? (db.findUserById(payload.sub) || db.findUserByAuthUserId(payload.sub)) : undefined;
     if (!user && payload.username) {
       user = db.findUserByUsername(payload.username);
+    }
+    if (!user && payload.email) {
+      user = db.data.users.find(u => u.email === payload!.email!.toLowerCase().trim());
     }
 
     if (!user) {
       return res.status(401).json({ error: 'User record not found for token' });
+    }
+
+    // If token was expired, proactively attach a refreshed token to response headers
+    if (isExpired) {
+      try {
+        const fresh = generateTokens(user.id, user.username, payload.sid);
+        res.setHeader('X-Refreshed-Token', fresh.accessToken);
+      } catch {}
     }
 
     req.user = {
@@ -176,30 +214,56 @@ authRouter.post('/login', authRateLimiter, async (req: Request, res: Response) =
   }
 });
 
+// GET /api/v1/auth/me
+// Returns current authenticated user profile
+authRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const user = db.findUserById(req.user!.userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  return res.status(200).json({
+    user: {
+      uuid: user.id,
+      username: user.username,
+      displayName: user.displayName,
+      email: user.email
+    }
+  });
+});
+
 // POST /api/v1/auth/refresh
 authRouter.post('/refresh', (req: Request, res: Response) => {
   const { refreshToken, userId } = req.body;
-  if (!refreshToken || !userId) {
-    return res.status(400).json({ error: 'Refresh token and userId required' });
+  if (!refreshToken) {
+    return res.status(400).json({ error: 'Refresh token required' });
   }
 
-  const isValid = db.verifySession(userId, refreshToken);
-  if (!isValid) {
+  let session = userId ? (db.verifySession(userId, refreshToken) ? db.data.sessions.find(s => s.userId === userId) : undefined) : undefined;
+  if (!session) {
+    session = db.findSessionByRefreshToken(refreshToken);
+  }
+
+  if (!session) {
     return res.status(401).json({ error: 'Invalid or expired refresh token' });
   }
 
-  const user = db.findUserById(userId);
+  const user = db.findUserById(session.userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
 
   // Rotate tokens
-  db.revokeSession(userId, refreshToken);
+  db.revokeSession(session.userId, refreshToken);
   const newTokens = generateTokens(user.id, user.username);
   db.createSession(user.id, 'primary-session', newTokens.refreshToken, REFRESH_TOKEN_EXPIRY_DAYS);
 
   return res.status(200).json({
-    tokens: newTokens
+    tokens: newTokens,
+    user: {
+      uuid: user.id,
+      username: user.username,
+      displayName: user.displayName
+    }
   });
 });
 

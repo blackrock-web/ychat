@@ -128,6 +128,20 @@ export class SyncEngine {
     this.connectionListeners.forEach(cb => cb(state));
   }
 
+  private async authFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers || {});
+    if (this.token) {
+      headers.set('Authorization', `Bearer ${this.token}`);
+    }
+    const res = await fetch(url, { ...init, headers });
+    const refreshed = res.headers.get('x-refreshed-token');
+    if (refreshed) {
+      this.token = refreshed;
+      localStorage.setItem('ychat_token', refreshed);
+    }
+    return res;
+  }
+
   private handleNetworkStateChange(isOnline: boolean) {
     if (isOnline) {
       this.connectWs();
@@ -392,11 +406,10 @@ export class SyncEngine {
         // Fallback to REST /api/v1/messages
         if (!sent) {
           try {
-            const res = await fetch('/api/v1/messages', {
+            const res = await this.authFetch('/api/v1/messages', {
               method: 'POST',
               headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${this.token}`
+                'Content-Type': 'application/json'
               },
               body: JSON.stringify(item.envelope)
             });
@@ -473,12 +486,30 @@ export class SyncEngine {
     });
 
     try {
+      // Ensure local device keys are loaded and have privateKeys
+      if (!this.deviceKeys || !this.deviceKeys.privateKeys) {
+        const savedKeys = await clientDb.getAnySavedDeviceKeys();
+        if (savedKeys && savedKeys.privateKeys) {
+          this.deviceKeys = savedKeys;
+        }
+      }
+
+      if (!this.deviceKeys || !this.deviceKeys.privateKeys) {
+        console.warn('[SyncEngine] Local device keys or privateKeys unavailable for envelope decryption');
+        return;
+      }
+
       // 1. Fetch sender device public keys to verify ML-DSA-87 signature and handshake
-      const bundleRes = await fetch(`/api/v1/devices/${envelope.senderDeviceId}/prekeys`, {
-        headers: { 'Authorization': `Bearer ${this.token}` }
-      });
-      if (!bundleRes.ok) return;
+      const bundleRes = await this.authFetch(`/api/v1/devices/${envelope.senderDeviceId}/prekeys`);
+      if (!bundleRes.ok) {
+        console.warn(`[SyncEngine] Could not fetch sender prekeys for ${envelope.senderDeviceId}: ${bundleRes.status}`);
+        return;
+      }
       const senderBundle: PrekeyBundle = await bundleRes.json();
+      if (!senderBundle || !senderBundle.publicKeys || !senderBundle.publicKeys.dhKey) {
+        console.warn(`[SyncEngine] Sender prekey bundle invalid or missing publicKeys for ${envelope.senderDeviceId}`);
+        return;
+      }
 
       let targetEnvelope: EncryptedEnvelope | null = envelope;
 
@@ -523,6 +554,11 @@ export class SyncEngine {
       if (!session) {
         if (!targetEnvelope.handshakePacket) {
           console.warn('[SyncEngine] No session and no handshakePacket in envelope:', targetEnvelope.clientMessageId);
+          return;
+        }
+
+        if (!this.deviceKeys.privateKeys.dhKey) {
+          console.warn('[SyncEngine] Missing local private dhKey for handshake');
           return;
         }
 
@@ -611,9 +647,7 @@ export class SyncEngine {
       } else if (this.token && this.userUuid) {
         // Conversation metadata not yet local - fetch authorized details from server
         try {
-          const cRes = await fetch(`/api/v1/conversations/${targetEnvelope.conversationId}`, {
-            headers: { 'Authorization': `Bearer ${this.token}` }
-          });
+          const cRes = await this.authFetch(`/api/v1/conversations/${targetEnvelope.conversationId}`);
           if (cRes.ok) {
             const cData = await cRes.json();
             const otherMember = (cData.members || []).find((m: any) => m.uuid !== this.userUuid);
@@ -713,11 +747,10 @@ export class SyncEngine {
         status
       }));
     } else if (this.token) {
-      fetch(`/api/v1/messages/${serverMessageId}/receipt`, {
+      this.authFetch(`/api/v1/messages/${serverMessageId}/receipt`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ clientMessageId: rootId, status })
       }).catch(() => {});
@@ -734,9 +767,7 @@ export class SyncEngine {
         details: { action: 'initiating_login_sync_pull' }
       });
 
-      const res = await fetch(`/api/v1/sync/pull?deviceId=${encodeURIComponent(this.deviceKeys.deviceId)}`, {
-        headers: { 'Authorization': `Bearer ${this.token}` }
-      });
+      const res = await this.authFetch(`/api/v1/sync/pull?deviceId=${encodeURIComponent(this.deviceKeys.deviceId)}`);
       if (res.ok) {
         const data = await res.json();
         if (data.messages && Array.isArray(data.messages)) {
@@ -767,9 +798,7 @@ export class SyncEngine {
   async syncConversationMessages(conversationId: string) {
     if (!this.token || !this.deviceKeys) return;
     try {
-      const res = await fetch(`/api/v1/conversations/${conversationId}/messages`, {
-        headers: { 'Authorization': `Bearer ${this.token}` }
-      });
+      const res = await this.authFetch(`/api/v1/conversations/${conversationId}/messages`);
       if (res.ok) {
         const data = await res.json();
         if (data.messages && Array.isArray(data.messages)) {

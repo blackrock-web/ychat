@@ -93,6 +93,16 @@ export function acceptHybridHandshake(
   senderPublicKeys: DevicePublicKeys,
   oneTimePrekeys?: OneTimePrekeyPrivate[] | OneTimePrekeyPrivate
 ): Uint8Array {
+  if (!handshakePacket) {
+    throw new Error('Cryptographic error: Missing handshake packet');
+  }
+  if (!senderPublicKeys || !senderPublicKeys.dhKey) {
+    throw new Error('Cryptographic error: senderPublicKeys or dhKey is undefined');
+  }
+  if (!recipientPrivateKeys || !recipientPrivateKeys.dhKey) {
+    throw new Error('Cryptographic error: recipientPrivateKeys or dhKey is undefined');
+  }
+
   const ephDhPub = base64ToBytes(handshakePacket.ephemeralDhKey);
   const kemCiphertext = base64ToBytes(handshakePacket.kemCiphertext);
   const signature = base64ToBytes(handshakePacket.signature);
