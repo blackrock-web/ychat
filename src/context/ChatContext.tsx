@@ -614,13 +614,16 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // SyncEngine receipt listener
   useEffect(() => {
-    const unsubscribe = syncEngine.onReceipt((clientMsgId, status, failureCategory, reason) => {
+    const unsubscribe = syncEngine.onReceipt((clientMsgId, status, failureCategory, reason, readAt) => {
       setMessages((prev) =>
         prev.map((m) => {
           if (m.clientMessageId === clientMsgId) {
+            const nowIso = new Date().toISOString();
             return {
               ...m,
               status,
+              readAt: readAt || (status === 'read' ? (m.readAt || nowIso) : m.readAt),
+              deliveredAt: status === 'delivered' || status === 'read' ? (m.deliveredAt || nowIso) : m.deliveredAt,
               failureReason: failureCategory as any,
               errorMessage: reason || (status === 'failed' ? "Message couldn't be delivered" : m.errorMessage)
             };
@@ -947,6 +950,30 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setSearchKeyword('');
     setActiveConversation(conv);
     syncEngine.setActiveConversation(conv.id);
+
+    // Fetch conversation history from local database
+    const localMsgs = await clientDb.getMessagesForConversation(conv.id);
+    setMessages(localMsgs);
+
+    if (conv.unreadCount > 0) {
+      const updated = { ...conv, unreadCount: 0 };
+      await clientDb.saveConversation(updated);
+      setActiveConversation(updated);
+      refreshConversations();
+    }
+
+    if (settings.readReceiptsEnabled) {
+      localMsgs.forEach((m) => {
+        if (m.senderUserUuid !== user.uuid && m.status !== 'read') {
+          syncEngine.sendReceipt(m.id, m.clientMessageId, 'read');
+        }
+      });
+    }
+
+    // Pull authoritative messages for this conversation from the server
+    await syncEngine.syncConversationMessages(conv.id);
+    const refreshedMsgs = await clientDb.getMessagesForConversation(conv.id);
+    setMessages(refreshedMsgs);
   };
 
   const toggleReaction = useCallback(

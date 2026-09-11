@@ -705,14 +705,21 @@ class ClientStorage {
   async updateMessageStatus(
     clientMessageId: string,
     status: DecryptedMessage['status'],
-    meta?: { failureReason?: string; errorMessage?: string; retryCount?: number; lastAttempt?: number }
+    meta?: { failureReason?: string; errorMessage?: string; retryCount?: number; lastAttempt?: number; readAt?: string | number; deliveredAt?: string | number }
   ): Promise<void> {
     const mem = this.memoryStore.messages.get(clientMessageId);
+    const nowIso = new Date().toISOString();
     if (mem) {
       mem.status = status;
       if (meta?.failureReason) mem.failureReason = meta.failureReason as any;
       if (meta?.errorMessage) mem.errorMessage = meta.errorMessage;
       if (meta?.retryCount !== undefined) mem.retryCount = meta.retryCount;
+      if (status === 'read') {
+        mem.readAt = meta?.readAt || mem.readAt || nowIso;
+        if (!mem.deliveredAt) mem.deliveredAt = meta?.deliveredAt || mem.readAt || nowIso;
+      } else if (status === 'delivered') {
+        mem.deliveredAt = meta?.deliveredAt || mem.deliveredAt || nowIso;
+      }
     }
 
     await this.runTransaction('messages', 'readwrite', (store) => {
@@ -728,6 +735,12 @@ class ClientStorage {
                 if (meta?.failureReason) dec.failureReason = meta.failureReason as any;
                 if (meta?.errorMessage) dec.errorMessage = meta.errorMessage;
                 if (meta?.retryCount !== undefined) dec.retryCount = meta.retryCount;
+                if (status === 'read') {
+                  dec.readAt = meta?.readAt || dec.readAt || nowIso;
+                  if (!dec.deliveredAt) dec.deliveredAt = meta?.deliveredAt || dec.readAt || nowIso;
+                } else if (status === 'delivered') {
+                  dec.deliveredAt = meta?.deliveredAt || dec.deliveredAt || nowIso;
+                }
                 const encrypted = await this.atRestDriver.encryptPayload(dec);
                 record = {
                   clientMessageId: dec.clientMessageId,
@@ -735,6 +748,8 @@ class ClientStorage {
                   timestamp: dec.timestamp,
                   serverSequence: dec.serverSequence,
                   status,
+                  readAt: dec.readAt,
+                  deliveredAt: dec.deliveredAt,
                   ...encrypted
                 };
               } catch {}
@@ -743,6 +758,12 @@ class ClientStorage {
               if (meta?.failureReason) record.failureReason = meta.failureReason;
               if (meta?.errorMessage) record.errorMessage = meta.errorMessage;
               if (meta?.retryCount !== undefined) record.retryCount = meta.retryCount;
+              if (status === 'read') {
+                record.readAt = meta?.readAt || record.readAt || nowIso;
+                if (!record.deliveredAt) record.deliveredAt = meta?.deliveredAt || record.readAt || nowIso;
+              } else if (status === 'delivered') {
+                record.deliveredAt = meta?.deliveredAt || record.deliveredAt || nowIso;
+              }
             }
             store.put(record);
           }
@@ -908,20 +929,31 @@ class ClientStorage {
   async enqueueMessage(item: QueuedMessage): Promise<void> {
     this.memoryStore.syncQueue.set(item.clientMessageId, item);
 
-    let recordToStore: any = item;
-    if (this.atRestDriver?.isUnlocked()) {
-      try {
-        const encrypted = await this.atRestDriver.encryptPayload(item);
-        recordToStore = {
-          clientMessageId: item.clientMessageId,
-          conversationId: item.conversationId,
-          timestamp: item.timestamp,
-          ...encrypted
-        };
-      } catch (err) {
-        console.warn('Failed to encrypt queued message at rest:', err);
-      }
+    await this.ensureAtRestUnlocked();
+    if (!this.atRestDriver?.isUnlocked()) {
+      console.error('Cannot write offline queue to disk: At-rest AES-256-GCM driver is locked');
+      return;
     }
+
+    // Strip unencrypted plaintext to ensure zero plain text is written to disk
+    const itemToEncrypt: QueuedMessage = {
+      clientMessageId: item.clientMessageId,
+      conversationId: item.conversationId,
+      recipientDeviceId: item.recipientDeviceId,
+      envelope: item.envelope,
+      timestamp: item.timestamp,
+      retries: item.retries,
+      lastAttempt: item.lastAttempt,
+      failureReason: item.failureReason
+    };
+
+    const encrypted = await this.atRestDriver.encryptPayload(itemToEncrypt);
+    const recordToStore = {
+      clientMessageId: item.clientMessageId,
+      conversationId: item.conversationId,
+      timestamp: item.timestamp,
+      ...encrypted
+    };
 
     await this.runTransaction('syncQueue', 'readwrite', (store) => {
       return new Promise<void>((resolve) => {
@@ -945,6 +977,7 @@ class ClientStorage {
   }
 
   async getSyncQueue(): Promise<QueuedMessage[]> {
+    await this.ensureAtRestUnlocked();
     const dbResult = await this.runTransaction('syncQueue', 'readonly', (store) => {
       return new Promise<any[]>((resolve) => {
         const req = store.getAll();
@@ -959,11 +992,19 @@ class ClientStorage {
         if (isEncryptedAtRest(raw) && this.atRestDriver?.isUnlocked()) {
           try {
             const dec = await this.atRestDriver.decryptPayload<QueuedMessage>(raw);
+            this.memoryStore.syncQueue.set(dec.clientMessageId, dec);
             decryptedList.push(dec);
           } catch (err) {
             console.warn('Failed to decrypt queued message at rest:', err);
           }
-        } else {
+        } else if (!isEncryptedAtRest(raw)) {
+          // If a legacy unencrypted item was found, encrypt it immediately
+          if (this.atRestDriver?.isUnlocked()) {
+            try {
+              await this.enqueueMessage(raw as QueuedMessage);
+            } catch {}
+          }
+          this.memoryStore.syncQueue.set((raw as any).clientMessageId, raw as QueuedMessage);
           decryptedList.push(raw as QueuedMessage);
         }
       }

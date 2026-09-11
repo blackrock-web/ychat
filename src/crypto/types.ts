@@ -139,7 +139,11 @@ export interface DecryptedMessage {
   errorMessage?: string; // Sanitized, human-friendly message e.g. "Message couldn't be delivered"
   retryCount?: number;
   retryable?: boolean;
+  readAt?: string | number; // Timestamp when recipient read the message
+  deliveredAt?: string | number; // Timestamp when message was delivered to recipient device
 }
+
+export type MessageSchema = DecryptedMessage;
 
 export interface Blake3ChainState {
   conversationId: string;

@@ -40,7 +40,7 @@ export class SyncEngine {
   private connectionState: ConnectionState = 'offline';
   private connectionListeners: Array<(state: ConnectionState) => void> = [];
   private messageListeners: Array<(msg: DecryptedMessage) => void> = [];
-  private receiptListeners: Array<(clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string) => void> = [];
+  private receiptListeners: Array<(clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string, readAt?: string | number) => void> = [];
   private presenceListeners: Array<(userUuid: string, status: 'online' | 'away' | 'offline', lastSeen?: number) => void> = [];
   private typingListeners: Array<(data: { conversationId: string; userUuid: string; isTyping: boolean }) => void> = [];
   private notificationListeners: Array<(notif: any) => void> = [];
@@ -63,6 +63,14 @@ export class SyncEngine {
   }
 
   setCredentials(token: string, deviceKeys: DeviceKeyBundle, userUuid: string) {
+    if (this.token !== token || this.deviceKeys?.deviceId !== deviceKeys.deviceId || this.userUuid !== userUuid) {
+      if (this.ws) {
+        try {
+          this.ws.close();
+        } catch {}
+        this.ws = null;
+      }
+    }
     this.token = token;
     this.deviceKeys = deviceKeys;
     this.userUuid = userUuid;
@@ -108,7 +116,7 @@ export class SyncEngine {
     };
   }
 
-  onReceipt(cb: (clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string) => void) {
+  onReceipt(cb: (clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string, readAt?: string | number) => void) {
     this.receiptListeners.push(cb);
     return () => {
       this.receiptListeners = this.receiptListeners.filter(l => l !== cb);
@@ -217,7 +225,9 @@ export class SyncEngine {
           if (data.type === 'message') {
             await this.handleIncomingEnvelope(data.envelope, data.messageId, data.serverSequence);
           } else if (data.type === 'receipt') {
-            await this.handleReceipt(data.clientMessageId, data.status, data.failureCategory, data.reason);
+            await this.handleReceipt(data.clientMessageId, data.status, data.failureCategory, data.reason, data.readAt);
+          } else if (data.type === 'read_ack') {
+            await this.handleReceipt(data.clientMessageId, 'read', undefined, undefined, data.readAt);
           } else if (data.type === 'presence') {
             this.presenceListeners.forEach(cb => cb(data.userUuid, data.status, data.lastSeen));
           } else if (data.type === 'presence_batch') {
@@ -963,20 +973,29 @@ export class SyncEngine {
     clientMessageId: string,
     status: DeliveryStatus,
     failureCategory?: string,
-    reason?: string
+    reason?: string,
+    readAt?: string | number
   ) {
     const rootId = clientMessageId.split('#chunk')[0];
+    const readTimestamp = readAt || (status === 'read' ? new Date().toISOString() : undefined);
     await clientDb.updateMessageStatus(rootId, status, {
       failureReason: failureCategory as any,
-      errorMessage: reason || (status === 'failed' ? "Message couldn't be delivered" : undefined)
+      errorMessage: reason || (status === 'failed' ? "Message couldn't be delivered" : undefined),
+      readAt: readTimestamp
     });
-    this.receiptListeners.forEach(cb => cb(rootId, status, failureCategory, reason));
+    this.receiptListeners.forEach(cb => cb(rootId, status, failureCategory, reason, readTimestamp));
 
     if (status === 'delivered') {
       syncDiagnostic.record('DELIVERY_CONFIRMED', {
         clientMessageId: rootId,
         conversationId: 'active',
         details: { status: 'delivered' }
+      });
+    } else if (status === 'read') {
+      syncDiagnostic.record('DELIVERY_CONFIRMED', {
+        clientMessageId: rootId,
+        conversationId: 'active',
+        details: { status: 'read', readAt: readTimestamp }
       });
     } else if (status === 'failed') {
       syncDiagnostic.record('DELIVERY_FAILED', {
@@ -995,14 +1014,27 @@ export class SyncEngine {
     reason?: string
   ) {
     const rootId = clientMessageId.split('#chunk')[0];
+    const readTimestamp = new Date().toISOString();
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (status === 'read') {
+        this.ws.send(JSON.stringify({
+          type: 'read_ack',
+          conversationId: this.activeConversationId,
+          messageId: serverMessageId,
+          clientMessageId: rootId,
+          status: 'read',
+          readAt: readTimestamp
+        }));
+      }
       this.ws.send(JSON.stringify({
         type: 'receipt',
+        conversationId: this.activeConversationId,
         messageId: serverMessageId,
         clientMessageId: rootId,
         status,
         failureCategory,
-        reason
+        reason,
+        readAt: status === 'read' ? readTimestamp : undefined
       }));
     } else if (this.token) {
       this.authFetch(`/api/v1/messages/${serverMessageId}/receipt`, {
@@ -1014,7 +1046,8 @@ export class SyncEngine {
           clientMessageId: rootId,
           status,
           failureCategory,
-          reason
+          reason,
+          readAt: status === 'read' ? readTimestamp : undefined
         })
       }).catch(() => {});
     }
@@ -1254,7 +1287,10 @@ export class SyncEngine {
             if (this.droppedEnvelopes.has(msg.clientMessageId)) {
               continue;
             }
-            if (msg.recipientDeviceId && msg.recipientDeviceId !== this.deviceKeys.deviceId) {
+            if (msg.recipientUserId && this.userUuid && msg.recipientUserId !== this.userUuid) {
+              continue;
+            }
+            if (!msg.recipientUserId && msg.recipientDeviceId && msg.recipientDeviceId !== this.deviceKeys.deviceId) {
               continue;
             }
             if (msg.senderDeviceId === this.deviceKeys.deviceId) {

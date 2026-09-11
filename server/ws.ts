@@ -345,7 +345,8 @@ class WebSocketManager {
       };
 
       this.sendEnvelopeToUser(recipientUserId, completeEnvelope, record.id, record.serverSequence);
-    } else if (data.type === 'receipt') {
+    } else if (data.type === 'receipt' || data.type === 'read_ack') {
+      const isReadAck = data.type === 'read_ack' || data.status === 'read';
       const targetMsg = db.getMessageByIdOrClientId(data.messageId) || (data.clientMessageId ? db.getMessageByIdOrClientId(data.clientMessageId) : undefined);
       const convId = data.conversationId || targetMsg?.conversationId;
 
@@ -358,17 +359,31 @@ class WebSocketManager {
         return;
       }
 
-      if (data.status === 'delivered') {
-        db.markDelivered(data.messageId);
-      } else if (data.status === 'read') {
-        db.markRead(data.messageId);
+      const readTimestamp = data.readAt || new Date().toISOString();
+      if (isReadAck) {
+        db.markRead(data.messageId || data.clientMessageId);
+      } else if (data.status === 'delivered') {
+        db.markDelivered(data.messageId || data.clientMessageId);
       }
+
+      // If this is a read acknowledgement, broadcast the dedicated read_ack event
+      if (isReadAck) {
+        this.sendReadAckToConversation(
+          convId,
+          data.clientMessageId || targetMsg?.clientMessageId || data.messageId,
+          data.messageId || targetMsg?.id,
+          client.userId,
+          readTimestamp
+        );
+      }
+
       this.sendReceiptToConversation(
         convId,
-        data.clientMessageId || data.messageId,
-        data.status,
+        data.clientMessageId || targetMsg?.clientMessageId || data.messageId,
+        isReadAck ? 'read' : data.status,
         data.failureCategory,
-        data.reason
+        data.reason,
+        readTimestamp
       );
     } else if (data.type === 'reaction') {
       const convId = data.conversationId;
@@ -441,7 +456,8 @@ class WebSocketManager {
     clientMessageId: string,
     status: string,
     failureCategory?: string,
-    reason?: string
+    reason?: string,
+    readAt?: string
   ) {
     const memberIds = new Set(db.getConversationMembers(conversationId));
     const payload = JSON.stringify({
@@ -450,7 +466,33 @@ class WebSocketManager {
       clientMessageId,
       status,
       failureCategory,
-      reason
+      reason,
+      readAt
+    });
+
+    this.clients.forEach((c) => {
+      if (memberIds.has(c.userId) && c.ws.readyState === WebSocket.OPEN) {
+        c.ws.send(payload);
+      }
+    });
+  }
+
+  sendReadAckToConversation(
+    conversationId: string,
+    clientMessageId: string,
+    messageId?: string,
+    readerUserId?: string,
+    readAt?: string
+  ) {
+    const memberIds = new Set(db.getConversationMembers(conversationId));
+    const timestamp = readAt || new Date().toISOString();
+    const payload = JSON.stringify({
+      type: 'read_ack',
+      conversationId,
+      clientMessageId,
+      messageId,
+      readerUserId,
+      readAt: timestamp
     });
 
     this.clients.forEach((c) => {

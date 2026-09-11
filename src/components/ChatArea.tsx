@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { AnimatePresence } from 'framer-motion';
 import { useChat } from '../context/ChatContext';
 import {
   Send,
@@ -28,6 +29,7 @@ import { DeliveryStatus, FileAttachment } from '../crypto/types';
 import { Avatar } from './Avatar';
 import { BubbleColor } from '../types/settings';
 import { EmojiPicker, FAVORITE_EMOJIS } from './EmojiPicker';
+import { MessageBubble } from './MessageBubble';
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -80,7 +82,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ onOpenSafetyNumber }) => {
     sendTyping,
     clearChatHistory,
     toggleMuteConversation,
-    isConversationMuted
+    isConversationMuted,
+    retryMessage
   } = useChat();
 
   const [inputText, setInputText] = useState('');
@@ -699,233 +702,33 @@ export const ChatArea: React.FC<ChatAreaProps> = ({ onOpenSafetyNumber }) => {
           </div>
         )}
 
-        {displayedMessages.map((msg) => {
-          const isSender = msg.senderUserUuid === user?.uuid;
-          const msgKey = msg.clientMessageId || msg.id;
-          const isPickerOpen = activePickerMsgId === msgKey;
-          const isFullPickerOpen = expandedPickerMsgId === msgKey;
+        <AnimatePresence initial={false}>
+          {displayedMessages.map((msg) => {
+            const isSender = msg.senderUserUuid === user?.uuid;
+            const msgKey = msg.clientMessageId || msg.id;
 
-          return (
-            <div
-              key={msgKey}
-              id={`chat-bubble-${msgKey}`}
-              className={`flex flex-col group relative ${isSender ? 'items-end' : 'items-start'}`}
-            >
-              <div className="relative max-w-[85%] md:max-w-[70%]">
-                {/* Floating Reaction Picker Popup */}
-                {isPickerOpen && (
-                  <div
-                    className={`reaction-picker-container absolute z-30 bottom-full mb-1 flex items-center space-x-1 p-1.5 rounded-2xl bg-slate-900/95 backdrop-blur-md border border-slate-700 shadow-xl ${
-                      isSender ? 'right-0' : 'left-0'
-                    }`}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {/* Favorites line */}
-                    {FAVORITE_EMOJIS.map((emoji) => {
-                      const isSelected = msg.reactions?.[emoji]?.includes(user?.uuid || '');
-                      return (
-                        <button
-                          key={emoji}
-                          type="button"
-                          onClick={() => {
-                            toggleReaction(msg.clientMessageId || msg.id, emoji, msg.id);
-                            setActivePickerMsgId(null);
-                            setExpandedPickerMsgId(null);
-                          }}
-                          className={`w-8 h-8 rounded-xl flex items-center justify-center text-base hover:scale-125 transition-transform cursor-pointer ${
-                            isSelected ? 'bg-violet-600/40 ring-1 ring-violet-500' : 'hover:bg-slate-800'
-                          }`}
-                          title={`React with ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      );
-                    })}
-
-                    {/* Plus button to open full unicode emoji picker */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setExpandedPickerMsgId(isFullPickerOpen ? null : msgKey);
-                      }}
-                      className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 text-sm font-bold transition-all cursor-pointer"
-                      title="All emojis"
-                    >
-                      +
-                    </button>
-                  </div>
-                )}
-
-                {/* Expanded Full Unicode Emoji Picker for this message */}
-                {isFullPickerOpen && (
-                  <div
-                    className={`reaction-picker-container absolute z-40 bottom-full mb-2 ${
-                      isSender ? 'right-0' : 'left-0'
-                    }`}
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <EmojiPicker
-                      className="w-72 sm:w-80"
-                      onSelect={(emoji) => {
-                        toggleReaction(msg.clientMessageId || msg.id, emoji, msg.id);
-                        setActivePickerMsgId(null);
-                        setExpandedPickerMsgId(null);
-                      }}
-                      onClose={() => {
-                        setExpandedPickerMsgId(null);
-                        setActivePickerMsgId(null);
-                      }}
-                    />
-                  </div>
-                )}
-
-                {/* Bubble Container */}
-                <div
-                  className={`rounded-2xl px-4 py-2.5 shadow-sm text-sm break-words relative transition-all ${
-                    isSender
-                      ? `${getSenderBubbleGradient(settings.bubbleColor)} rounded-br-xs`
-                      : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-bl-xs incoming-message-bubble'
-                  }`}
-                >
-                  {/* Quick Action Button for Reactions */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActivePickerMsgId(isPickerOpen ? null : msgKey);
-                      setExpandedPickerMsgId(null);
-                    }}
-                    className={`absolute top-1 p-1 rounded-full text-slate-400 hover:text-slate-100 hover:bg-black/30 transition-all opacity-0 group-hover:opacity-100 focus:opacity-100 cursor-pointer ${
-                      isSender ? '-left-7' : '-right-7'
-                    }`}
-                    title="Add reaction"
-                  >
-                    <SmilePlus className="w-3.5 h-3.5" />
-                  </button>
-
-                  {/* Attachment Preview if present */}
-                  {msg.attachment && (
-                    <div className="mb-2">
-                      {msg.attachment.mimeType.startsWith('image/') ? (
-                        <div className="relative group/img overflow-hidden rounded-xl border border-white/10 bg-black/20">
-                          <img
-                            src={msg.attachment.dataUrl}
-                            alt={msg.attachment.fileName}
-                            className="max-w-full max-h-72 object-contain rounded-xl"
-                          />
-                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-end p-2">
-                            <a
-                              href={msg.attachment.dataUrl}
-                              download={msg.attachment.fileName}
-                              className="p-2 rounded-lg bg-black/60 hover:bg-black/80 text-white transition-colors cursor-pointer shadow-md"
-                              title={`Download ${msg.attachment.fileName}`}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Download className="w-4 h-4" />
-                            </a>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center space-x-3 p-2.5 rounded-xl bg-black/20 border border-white/10">
-                          <div className="p-2 rounded-lg bg-white/10 text-violet-300">
-                            <FileText className="w-5 h-5" />
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-xs font-medium text-white truncate" title={msg.attachment.fileName}>
-                              {msg.attachment.fileName}
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              {formatFileSize(msg.attachment.fileSize)}
-                            </div>
-                          </div>
-                          <a
-                            href={msg.attachment.dataUrl}
-                            download={msg.attachment.fileName}
-                            className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors cursor-pointer"
-                            title="Download file"
-                            onClick={(e) => e.stopPropagation()}
-                          >
-                            <Download className="w-4 h-4" />
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Message Text */}
-                  {msg.text && (
-                    <div className="leading-relaxed whitespace-pre-wrap">
-                      {normalizedSearch ? highlightKeyword(msg.text, inChatSearchTerm) : msg.text}
-                    </div>
-                  )}
-
-                  {/* Message Meta: Tamper status, timestamp, delivery receipt */}
-                  <div
-                    className={`mt-1 flex items-center justify-end space-x-1 text-[10px] select-none ${
-                      isSender ? 'opacity-90' : 'text-slate-400'
-                    }`}
-                  >
-                    {msg.tamperVerified && (
-                      <span title="BLAKE3 hash chain verified">
-                        <Lock className="w-2.5 h-2.5 inline mr-0.5 opacity-70" />
-                      </span>
-                    )}
-                    {/* Clickable timestamp to toggle absolute / relative */}
-                    <span
-                      onClick={() => toggleTimestampFormat(msgKey)}
-                      className="cursor-pointer hover:underline opacity-80"
-                      title="Click to toggle timestamp format"
-                    >
-                      {formatMessageTimestamp(msgKey, msg.timestamp)}
-                    </span>
-                    {/* Sender message readiness ticks */}
-                    {isSender && renderStatusIcon(msg.status)}
-                  </div>
-                </div>
-
-                {/* Message Reactions Pills */}
-                {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                  <div className={`flex flex-wrap gap-1 mt-1 ${isSender ? 'justify-end' : 'justify-start'}`}>
-                    {Object.entries(msg.reactions).map(([emoji, users]) => {
-                      if (!users || users.length === 0) return null;
-                      const userReacted = user?.uuid ? users.includes(user.uuid) : false;
-                      return (
-                        <button
-                          key={emoji}
-                          type="button"
-                          onClick={() => toggleReaction(msg.clientMessageId || msg.id, emoji, msg.id)}
-                          className={`flex items-center space-x-1 px-2 py-0.5 rounded-full text-xs transition-all cursor-pointer ${
-                            userReacted
-                              ? 'bg-violet-600/30 border border-violet-500/60 text-violet-200 shadow-xs'
-                              : 'bg-slate-800/90 border border-slate-700/80 text-slate-300 hover:bg-slate-700/90'
-                          }`}
-                          title={`${users.length} reaction${users.length > 1 ? 's' : ''}${
-                            userReacted ? ' (Click to remove)' : ' (Click to add)'
-                          }`}
-                        >
-                          <span>{emoji}</span>
-                          <span className="text-[10px] font-semibold opacity-90">{users.length}</span>
-                        </button>
-                      );
-                    })}
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActivePickerMsgId(isPickerOpen ? null : msgKey);
-                        setExpandedPickerMsgId(null);
-                      }}
-                      className="px-1.5 py-0.5 rounded-full bg-slate-800/80 border border-slate-700/70 text-slate-400 hover:text-slate-200 text-xs transition-all cursor-pointer"
-                      title="Add reaction"
-                    >
-                      +
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
+            return (
+              <MessageBubble
+                key={msgKey}
+                msg={msg}
+                isSender={isSender}
+                userUuid={user?.uuid}
+                settings={settings}
+                searchKeyword={inChatSearchTerm}
+                onRetry={(clientMsgId) => retryMessage(clientMsgId)}
+                onToggleReaction={toggleReaction}
+                onToggleTimestampFormat={toggleTimestampFormat}
+                formatTimestamp={formatMessageTimestamp}
+                highlightKeyword={highlightKeyword}
+                activePickerMsgId={activePickerMsgId}
+                expandedPickerMsgId={expandedPickerMsgId}
+                setActivePickerMsgId={setActivePickerMsgId}
+                setExpandedPickerMsgId={setExpandedPickerMsgId}
+                favoriteEmojis={FAVORITE_EMOJIS}
+              />
+            );
+          })}
+        </AnimatePresence>
         <div ref={messagesEndRef} />
       </div>
 

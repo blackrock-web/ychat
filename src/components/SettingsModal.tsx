@@ -28,11 +28,25 @@ import {
   Image as ImageIcon,
   Sparkles,
   Link,
-  ChevronRight
+  ChevronRight,
+  MessageSquare,
+  HardDrive,
+  Send,
+  Layers
 } from 'lucide-react';
 import { useChat, playNotificationChime } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { ThemeMode, BubbleColor, ChatWallpaper, FontSize, TimestampFormat } from '../types/settings';
+import {
+  ThemeMode,
+  BubbleColor,
+  ChatWallpaper,
+  FontSize,
+  TimestampFormat,
+  MessageThemeStyle,
+  MessageGradientType,
+  IncomingMessageStyle,
+  RetentionPeriodOption
+} from '../types/settings';
 import { SecurityAuditModal } from './SecurityAuditModal';
 import { Avatar } from './Avatar';
 
@@ -66,7 +80,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const { theme, setTheme, resolvedTheme } = useTheme();
 
   const [activeTab, setActiveTab] = useState<
-    'profile' | 'privacy' | 'notifications' | 'appearance' | 'security' | 'account'
+    'profile' | 'messages' | 'appearance' | 'privacy' | 'notifications' | 'security' | 'account'
   >('appearance');
 
   // Profile Form state
@@ -334,9 +348,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const navItems = [
     { id: 'profile', label: 'Profile', icon: User, desc: 'Display name, bio & avatar' },
+    { id: 'messages', label: 'Messages', icon: MessageSquare, desc: 'Retention & bubble themes' },
+    { id: 'appearance', label: 'Appearance', icon: Palette, desc: 'Themes, wallpaper & bubbles' },
     { id: 'privacy', label: 'Privacy', icon: EyeOff, desc: 'Read receipts, presence & blocks' },
     { id: 'notifications', label: 'Notifications', icon: Bell, desc: 'Sound, alerts & conversation mutes' },
-    { id: 'appearance', label: 'Appearance', icon: Palette, desc: 'Themes, wallpaper & bubbles' },
     { id: 'security', label: 'Security', icon: ShieldCheck, desc: 'Keys, audit & devices' },
     { id: 'account', label: 'Account', icon: Lock, desc: 'Password & account settings' }
   ];
@@ -661,6 +676,337 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </button>
                 </div>
               </form>
+            )}
+
+            {/* ================= MESSAGES TAB ================= */}
+            {activeTab === 'messages' && (
+              <div className="space-y-6 max-w-2xl">
+                {/* Section Header */}
+                <div className="border-b border-slate-800 pb-3">
+                  <h3 className="text-sm font-bold text-white flex items-center space-x-2">
+                    <MessageSquare className="w-4 h-4 text-violet-400" />
+                    <span>Message Storage & Appearance</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Manage offline encrypted storage retention periods, visual bubble themes, and delivery preferences.
+                  </p>
+                </div>
+
+                {/* 1. Offline Encrypted Retention Period */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-3">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <label className="text-xs font-bold text-slate-200 flex items-center space-x-2">
+                        <HardDrive className="w-3.5 h-3.5 text-violet-400" />
+                        <span>Offline Encrypted Retention Period</span>
+                      </label>
+                      <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                        Undelivered messages are encrypted with <strong>AES-256-GCM</strong> before writing to local IndexedDB. Choose how long messages are retained offline before expiring.
+                      </p>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-violet-950/60 border border-violet-800/40 text-violet-300 shrink-0">
+                      AES-256-GCM
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                    {[
+                      { value: 15, label: '15 Minutes', badge: 'Ephemeral' },
+                      { value: 60, label: '1 Hour' },
+                      { value: 360, label: '6 Hours' },
+                      { value: 720, label: '12 Hours' },
+                      { value: 1440, label: '24 Hours', badge: 'Recommended' },
+                      { value: 4320, label: '3 Days' },
+                      { value: 10080, label: '7 Days' }
+                    ].map((opt) => {
+                      const isSelected = (settings.offlineRetentionMinutes || 1440) === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          id={`retention-opt-${opt.value}`}
+                          onClick={() => {
+                            updateSettings({ offlineRetentionMinutes: opt.value as RetentionPeriodOption });
+                          }}
+                          className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-violet-950/40 border-violet-500 text-white ring-1 ring-violet-500 shadow-xs'
+                              : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span className="text-xs font-semibold">{opt.label}</span>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                          </div>
+                          {opt.badge && (
+                            <span className="mt-1 text-[9px] font-medium text-violet-300">
+                              {opt.badge}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Auto-Retry Toggle */}
+                  <div className="pt-3 border-t border-slate-800/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200 block">
+                        Auto-Retry Failed Messages
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        Automatically attempt re-transmission when network connection is restored.
+                      </span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="setting-auto-retry"
+                        checked={settings.autoRetryFailedMessages ?? true}
+                        onChange={(e) => updateSettings({ autoRetryFailedMessages: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                    </label>
+                  </div>
+
+                  {/* Enter to Send Toggle */}
+                  <div className="pt-3 border-t border-slate-800/60 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200 block">
+                        Press Enter to Send
+                      </span>
+                      <span className="text-[11px] text-slate-400">
+                        Use Enter to transmit messages and Shift+Enter for new lines.
+                      </span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="setting-enter-to-send"
+                        checked={settings.enterToSend ?? true}
+                        onChange={(e) => updateSettings({ enterToSend: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* 2. Message Appearance Themes */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800 space-y-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-200 flex items-center space-x-2">
+                      <Palette className="w-3.5 h-3.5 text-violet-400" />
+                      <span>Message Appearance Style</span>
+                    </label>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Choose how your outgoing and incoming message bubbles are styled.
+                    </p>
+                  </div>
+
+                  {/* Theme Style Mode Switcher */}
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: 'solid' as MessageThemeStyle, label: 'Solid Color', desc: 'Classic clean tint' },
+                      { id: 'gradient' as MessageThemeStyle, label: 'Dual Gradient', desc: 'Smooth dual-tone' },
+                      { id: 'theme' as MessageThemeStyle, label: 'Obsidian Theme', desc: 'Deep signature look' }
+                    ].map((mode) => {
+                      const isSelected = (settings.messageThemeStyle || 'solid') === mode.id;
+                      return (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          id={`msg-theme-mode-${mode.id}`}
+                          onClick={() => updateSettings({ messageThemeStyle: mode.id })}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-violet-950/40 border-violet-500 text-white ring-1 ring-violet-500 shadow-xs'
+                              : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                          }`}
+                        >
+                          <div className="text-xs font-bold text-slate-100 flex items-center justify-between">
+                            <span>{mode.label}</span>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                          </div>
+                          <span className="text-[10px] text-slate-400 mt-0.5 block">{mode.desc}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Gradient Presets (shown if gradient or as option) */}
+                  {settings.messageThemeStyle === 'gradient' && (
+                    <div className="pt-2 space-y-2">
+                      <label className="text-xs font-bold text-slate-300">
+                        Gradient Palette
+                      </label>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {[
+                          { id: 'violet-indigo' as MessageGradientType, label: 'Violet & Indigo', classes: 'from-violet-600 to-indigo-700' },
+                          { id: 'cyan-blue' as MessageGradientType, label: 'Cyan & Blue', classes: 'from-cyan-500 to-blue-600' },
+                          { id: 'emerald-teal' as MessageGradientType, label: 'Emerald & Teal', classes: 'from-emerald-500 to-teal-700' },
+                          { id: 'rose-pink' as MessageGradientType, label: 'Rose & Pink', classes: 'from-rose-500 to-pink-600' },
+                          { id: 'amber-orange' as MessageGradientType, label: 'Amber & Orange', classes: 'from-amber-500 to-orange-600' }
+                        ].map((grad) => {
+                          const isSelected = (settings.messageGradient || 'violet-indigo') === grad.id;
+                          return (
+                            <button
+                              key={grad.id}
+                              type="button"
+                              id={`gradient-preset-${grad.id}`}
+                              onClick={() => updateSettings({ messageGradient: grad.id })}
+                              className={`p-2 rounded-xl border flex items-center space-x-2 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-slate-800/90 border-violet-500 ring-1 ring-violet-500 text-white'
+                                  : 'bg-slate-900/50 border-slate-800 text-slate-300 hover:bg-slate-800/50'
+                              }`}
+                            >
+                              <div className={`w-5 h-5 rounded-lg bg-gradient-to-br ${grad.classes} shrink-0 shadow-xs`} />
+                              <span className="text-xs font-medium truncate">{grad.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bubble Color (Solid Mode) */}
+                  {settings.messageThemeStyle === 'solid' && (
+                    <div className="pt-2 space-y-2">
+                      <label className="text-xs font-bold text-slate-300">
+                        Bubble Tint
+                      </label>
+                      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                        {bubbleOptions.map((opt) => {
+                          const isSelected = (settings.bubbleColor || 'violet') === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              id={`bubble-color-opt-${opt.id}`}
+                              onClick={() => updateSettings({ bubbleColor: opt.id })}
+                              className={`p-2 rounded-xl border flex flex-col items-center justify-center space-y-1.5 transition-all cursor-pointer ${
+                                isSelected
+                                  ? 'bg-slate-800 border-violet-500 ring-1 ring-violet-500 shadow-xs'
+                                  : 'bg-slate-900/50 border-slate-800 hover:bg-slate-800/40'
+                              }`}
+                            >
+                              <div className={`w-5 h-5 rounded-full ${opt.class} shadow-sm`} />
+                              <span className="text-[10px] text-slate-300 font-medium">{opt.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Incoming Bubble Style */}
+                  <div className="pt-2 space-y-2">
+                    <label className="text-xs font-bold text-slate-300">
+                      Incoming Bubble Style
+                    </label>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { id: 'default' as IncomingMessageStyle, label: 'Charcoal' },
+                        { id: 'slate' as IncomingMessageStyle, label: 'Deep Slate' },
+                        { id: 'high-contrast' as IncomingMessageStyle, label: 'High Contrast' },
+                        { id: 'subdued' as IncomingMessageStyle, label: 'Subdued' }
+                      ].map((inc) => {
+                        const isSelected = (settings.incomingBubbleStyle || 'default') === inc.id;
+                        return (
+                          <button
+                            key={inc.id}
+                            type="button"
+                            id={`incoming-bubble-opt-${inc.id}`}
+                            onClick={() => updateSettings({ incomingBubbleStyle: inc.id })}
+                            className={`p-2 rounded-xl border text-center text-xs font-semibold transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-violet-950/40 border-violet-500 text-white ring-1 ring-violet-500'
+                                : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            {inc.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Live Interactive Bubble Preview */}
+                  <div className="pt-3 border-t border-slate-800/60 space-y-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                      Live Preview
+                    </span>
+                    <div className="p-4 rounded-xl bg-slate-950 border border-slate-800/80 space-y-2.5">
+                      {/* Simulated incoming bubble */}
+                      <div className="flex justify-start">
+                        <div
+                          className={`rounded-2xl rounded-bl-xs px-3.5 py-2 text-xs max-w-[80%] ${
+                            settings.incomingBubbleStyle === 'high-contrast'
+                              ? 'bg-slate-950 border-2 border-slate-600 text-white'
+                              : settings.incomingBubbleStyle === 'subdued'
+                              ? 'bg-slate-800/60 border border-slate-700/40 text-slate-300'
+                              : settings.incomingBubbleStyle === 'slate'
+                              ? 'bg-slate-900 border border-slate-800 text-slate-200'
+                              : 'bg-slate-800 border border-slate-700/60 text-slate-100'
+                          }`}
+                        >
+                          <span>Hey there! How is the encrypted offline queue functioning?</span>
+                          <div className="text-[10px] text-slate-400 text-right mt-1">10:42 AM</div>
+                        </div>
+                      </div>
+
+                      {/* Simulated outgoing bubble */}
+                      <div className="flex justify-end">
+                        <div
+                          className={`rounded-2xl rounded-br-xs px-3.5 py-2 text-xs max-w-[80%] shadow-sm ${
+                            settings.messageThemeStyle === 'gradient'
+                              ? settings.messageGradient === 'cyan-blue'
+                                ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white'
+                                : settings.messageGradient === 'emerald-teal'
+                                ? 'bg-gradient-to-br from-emerald-500 to-teal-700 text-white'
+                                : settings.messageGradient === 'rose-pink'
+                                ? 'bg-gradient-to-br from-rose-500 to-pink-600 text-white'
+                                : settings.messageGradient === 'amber-orange'
+                                ? 'bg-gradient-to-br from-amber-500 to-orange-600 text-slate-950 font-medium'
+                                : 'bg-gradient-to-br from-violet-600 to-indigo-700 text-white'
+                              : settings.messageThemeStyle === 'theme'
+                              ? 'bg-gradient-to-br from-slate-900 to-violet-950 border border-violet-500/40 text-violet-100'
+                              : settings.bubbleColor === 'indigo'
+                              ? 'bg-indigo-600 text-white'
+                              : settings.bubbleColor === 'emerald'
+                              ? 'bg-emerald-600 text-white'
+                              : settings.bubbleColor === 'cyan'
+                              ? 'bg-cyan-600 text-white'
+                              : settings.bubbleColor === 'rose'
+                              ? 'bg-rose-600 text-white'
+                              : settings.bubbleColor === 'amber'
+                              ? 'bg-amber-500 text-slate-950 font-medium'
+                              : settings.bubbleColor === 'slate'
+                              ? 'bg-slate-700 text-white'
+                              : settings.bubbleColor === 'midnight'
+                              ? 'bg-slate-950 border border-slate-700 text-slate-100'
+                              : 'bg-violet-600 text-white'
+                          }`}
+                        >
+                          <span>Undelivered messages are protected with AES-256-GCM encryption before writing to disk.</span>
+                          <div className="flex items-center justify-end space-x-1 text-[10px] mt-1 opacity-90">
+                            <span>10:43 AM</span>
+                            <CheckCheck className="w-3.5 h-3.5 text-cyan-400 drop-shadow-[0_0_4px_rgba(34,211,238,0.8)]" />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cloud persistence notification */}
+                  <div className="flex items-center space-x-2 text-[11px] text-emerald-400 pt-1">
+                    <CheckCheck className="w-4 h-4" />
+                    <span>Preferences automatically synced to secure profile API.</span>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* ================= PRIVACY TAB ================= */}

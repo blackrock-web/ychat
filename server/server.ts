@@ -180,8 +180,10 @@ async function seedDemoAccounts() {
         m.id !== '3d286126-0d4b-4b03-af1f-a8ae28772ca9'
     );
 
-    // Ensure default direct conversation exists between Alice and Bob
+    // Ensure default direct conversations exist between all demo users
     db.createDirectConversation(userA.id, userB.id);
+    db.createDirectConversation(userA.id, userC.id);
+    db.createDirectConversation(userB.id, userC.id);
     (db as any).persist();
   } catch (err) {
     console.error('[Seed Error]:', err);
