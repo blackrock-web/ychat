@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Palette,
@@ -16,15 +16,25 @@ import {
   Loader2,
   Lock,
   Smartphone,
-  FileCheck,
   ShieldCheck,
   Trash2,
   Clock,
-  UserX
+  UserX,
+  Copy,
+  CheckCheck,
+  Camera,
+  Play,
+  Type,
+  Image as ImageIcon,
+  Sparkles,
+  Link,
+  ChevronRight
 } from 'lucide-react';
-import { useChat } from '../context/ChatContext';
-import { ThemeMode, BubbleColor, ChatWallpaper, TimestampFormat } from '../types/settings';
+import { useChat, playNotificationChime } from '../context/ChatContext';
+import { useTheme } from '../context/ThemeContext';
+import { ThemeMode, BubbleColor, ChatWallpaper, FontSize, TimestampFormat } from '../types/settings';
 import { SecurityAuditModal } from './SecurityAuditModal';
+import { Avatar } from './Avatar';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -47,14 +57,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     blockedUsers,
     blockUser,
     unblockUser,
+    updateUserProfile,
     changePassword,
     deleteAccount,
     deviceId
   } = useChat();
 
+  const { theme, setTheme, resolvedTheme } = useTheme();
+
   const [activeTab, setActiveTab] = useState<
-    'appearance' | 'privacy' | 'notifications' | 'security' | 'account'
+    'profile' | 'privacy' | 'notifications' | 'appearance' | 'security' | 'account'
   >('appearance');
+
+  // Profile Form state
+  const [displayName, setDisplayName] = useState(user?.displayName || '');
+  const [about, setAbout] = useState(user?.about || 'Available on YChat');
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl || '');
+  const [backgroundImageUrl, setBackgroundImageUrl] = useState(user?.backgroundImage || settings.customWallpaperUrl || '');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [profileSuccess, setProfileSuccess] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [copiedUuid, setCopiedUuid] = useState(false);
+  const [copiedUsername, setCopiedUsername] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wallpaperFileInputRef = useRef<HTMLInputElement | null>(null);
+  const profileBackgroundFileRef = useRef<HTMLInputElement | null>(null);
+
+  // Sync profile fields when modal opens or user updates
+  useEffect(() => {
+    if (user) {
+      setDisplayName(user.displayName || '');
+      setAbout(user.about || 'Available on YChat');
+      setAvatarUrl(user.avatarUrl || '');
+      setBackgroundImageUrl(user.backgroundImage || settings.customWallpaperUrl || '');
+    }
+  }, [user, isOpen, settings.customWallpaperUrl]);
 
   // Password change state
   const [currentPassword, setCurrentPassword] = useState('');
@@ -73,7 +110,121 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [blockUsernameInput, setBlockUsernameInput] = useState('');
   const [isBlocking, setIsBlocking] = useState(false);
 
+  // Custom wallpaper URL input
+  const [customWallpaperInput, setCustomWallpaperInput] = useState(settings.customWallpaperUrl || user?.backgroundImage || '');
+
   if (!isOpen) return null;
+
+  const handleProfileSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileError('');
+    setProfileSuccess(false);
+    setIsSavingProfile(true);
+
+    try {
+      const cleanAvatar = avatarUrl.trim();
+      const cleanBackground = backgroundImageUrl.trim();
+      await updateUserProfile({
+        displayName: displayName.trim(),
+        about: about.trim(),
+        avatarUrl: cleanAvatar,
+        backgroundImage: cleanBackground
+      });
+      if (cleanBackground) {
+        updateSettings({
+          chatWallpaper: 'custom',
+          customWallpaperUrl: cleanBackground
+        });
+      }
+      setProfileSuccess(true);
+      setTimeout(() => setProfileSuccess(false), 2500);
+    } catch (err: any) {
+      setProfileError(err.message || 'Failed to update profile');
+    } finally {
+      setIsSavingProfile(false);
+    }
+  };
+
+  const handleProfileBackgroundFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 3 * 1024 * 1024) {
+      alert('Wallpaper image size must be under 3MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target?.result as string;
+      setBackgroundImageUrl(base64);
+      setCustomWallpaperInput(base64);
+      updateSettings({ chatWallpaper: 'custom', customWallpaperUrl: base64 });
+      try {
+        await updateUserProfile({ backgroundImage: base64 });
+        setProfileSuccess(true);
+        setTimeout(() => setProfileSuccess(false), 2000);
+      } catch (_) {}
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert('Avatar image size must be under 2MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target?.result as string;
+      setAvatarUrl(base64);
+      try {
+        await updateUserProfile({ avatarUrl: base64 });
+        setProfileSuccess(true);
+        setTimeout(() => setProfileSuccess(false), 2000);
+      } catch (err: any) {
+        setProfileError(err.message || 'Failed to update avatar');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleWallpaperFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 3 * 1024 * 1024) {
+      alert('Wallpaper image size must be under 3MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const base64 = event.target?.result as string;
+      setCustomWallpaperInput(base64);
+      setBackgroundImageUrl(base64);
+      updateSettings({ chatWallpaper: 'custom', customWallpaperUrl: base64 });
+      try {
+        await updateUserProfile({ backgroundImage: base64 });
+      } catch (_) {}
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleCopy = (text: string, type: 'uuid' | 'username') => {
+    navigator.clipboard.writeText(text);
+    if (type === 'uuid') {
+      setCopiedUuid(true);
+      setTimeout(() => setCopiedUuid(false), 2000);
+    } else {
+      setCopiedUsername(true);
+      setTimeout(() => setCopiedUsername(false), 2000);
+    }
+  };
 
   const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,8 +293,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (!blockUsernameInput.trim()) return;
     setIsBlocking(true);
     try {
-      // Find user by username
-      const res = await fetch(`/api/v1/users/search?q=${encodeURIComponent(blockUsernameInput.trim())}`);
+      const res = await fetch(`/api/v1/users/search?username=${encodeURIComponent(blockUsernameInput.trim())}`);
       if (res.ok) {
         const results = await res.json();
         const target = results.users?.find(
@@ -163,637 +313,1082 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const bubbleOptions: { id: BubbleColor; label: string; class: string }[] = [
-    { id: 'violet', label: 'Violet', class: 'bg-violet-600' },
-    { id: 'indigo', label: 'Indigo', class: 'bg-indigo-600' },
-    { id: 'emerald', label: 'Emerald', class: 'bg-emerald-600' },
-    { id: 'cyan', label: 'Cyan', class: 'bg-cyan-600' },
-    { id: 'rose', label: 'Rose', class: 'bg-rose-600' },
-    { id: 'amber', label: 'Amber', class: 'bg-amber-600' }
+  const bubbleOptions: { id: BubbleColor; label: string; class: string; hex: string }[] = [
+    { id: 'violet', label: 'Violet', class: 'bg-violet-600', hex: '#7c3aed' },
+    { id: 'indigo', label: 'Indigo', class: 'bg-indigo-600', hex: '#4f46e5' },
+    { id: 'emerald', label: 'Emerald', class: 'bg-emerald-600', hex: '#059669' },
+    { id: 'cyan', label: 'Cyan', class: 'bg-cyan-600', hex: '#0891b2' },
+    { id: 'rose', label: 'Rose', class: 'bg-rose-600', hex: '#e11d48' },
+    { id: 'amber', label: 'Amber', class: 'bg-amber-600', hex: '#d97706' }
   ];
 
-  const wallpaperOptions: { id: ChatWallpaper; label: string }[] = [
-    { id: 'default', label: 'Classic Dark' },
-    { id: 'subtle-grid', label: 'Blueprint Grid' },
-    { id: 'dots', label: 'Quantum Dots' },
-    { id: 'minimal', label: 'Pure Minimal' }
+  const wallpaperOptions: { id: ChatWallpaper; label: string; description: string }[] = [
+    { id: 'ychat-theme', label: 'YChat Signature', description: 'Deep obsidian & violet wallpaper' },
+    { id: 'default', label: 'Classic Dark', description: 'Clean solid dark surface' },
+    { id: 'clean-light', label: 'Clean Light', description: 'Crisp, high-contrast light slate' },
+    { id: 'subtle-grid', label: 'Blueprint Grid', description: 'Technical isometric grid pattern' },
+    { id: 'dots', label: 'Telegram Dots', description: 'Subtle ambient dot matrix' },
+    { id: 'minimal', label: 'Pure Minimal', description: 'Flat borderless background' },
+    { id: 'custom', label: 'Custom Image', description: 'Personal URL or uploaded image' }
+  ];
+
+  const navItems = [
+    { id: 'profile', label: 'Profile', icon: User, desc: 'Display name, bio & avatar' },
+    { id: 'privacy', label: 'Privacy', icon: EyeOff, desc: 'Read receipts, presence & blocks' },
+    { id: 'notifications', label: 'Notifications', icon: Bell, desc: 'Sound, alerts & conversation mutes' },
+    { id: 'appearance', label: 'Appearance', icon: Palette, desc: 'Themes, wallpaper & bubbles' },
+    { id: 'security', label: 'Security', icon: ShieldCheck, desc: 'Keys, audit & devices' },
+    { id: 'account', label: 'Account', icon: Lock, desc: 'Password & account settings' }
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
       <div
         id="settings-modal"
-        className="w-full max-w-xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh] animate-in fade-in zoom-in-95 duration-150"
+        className="w-full max-w-4xl bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl overflow-hidden flex flex-col md:flex-row h-[620px] max-h-[92vh] transition-all"
       >
-        {/* Header */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/80">
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">Application Settings</h2>
-            <p className="text-xs text-slate-400">Personalize your privacy, theme, and security</p>
+        {/* ================= LEFT SIDEBAR NAVIGATION ================= */}
+        <div className="w-full md:w-64 bg-slate-950/80 border-b md:border-b-0 md:border-r border-slate-800/80 flex flex-col shrink-0">
+          {/* Sidebar User Header */}
+          <div className="p-4 border-b border-slate-800/80 flex items-center space-x-3 bg-slate-900/40">
+            <img
+              src="/1.jpg"
+              alt="YChat Logo"
+              className="w-10 h-10 rounded-xl object-cover shadow-md border border-violet-500/30 shrink-0"
+            />
+            <div className="min-w-0 flex-1">
+              <h2 className="text-sm font-bold text-white tracking-tight truncate">YChat Settings</h2>
+              <p className="text-[11px] text-slate-400 truncate">@{user?.username || 'user'}</p>
+            </div>
+            {/* Mobile Close Button */}
+            <button
+              id="settings-modal-close-mobile-btn"
+              onClick={onClose}
+              className="md:hidden p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
-          <button
-            id="settings-modal-close-btn"
-            onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-md transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-slate-800 bg-slate-950/40 px-3 overflow-x-auto">
-          {[
-            { id: 'appearance', label: 'Appearance', icon: Palette },
-            { id: 'privacy', label: 'Privacy', icon: EyeOff },
-            { id: 'notifications', label: 'Notifications', icon: Bell },
-            { id: 'security', label: 'Security', icon: Shield },
-            { id: 'account', label: 'Account', icon: User }
-          ].map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                id={`settings-tab-${tab.id}`}
-                onClick={() => setActiveTab(tab.id as any)}
-                className={`py-3 px-3 text-xs font-medium border-b-2 whitespace-nowrap transition-colors flex items-center gap-1.5 ${
-                  isActive
-                    ? 'border-violet-500 text-violet-400'
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Content Area */}
-        <div className="flex-1 overflow-y-auto p-5">
-          {/* ================= APPEARANCE TAB ================= */}
-          {activeTab === 'appearance' && (
-            <div className="space-y-5">
-              {/* Theme Mode */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-200 mb-2">
-                  Color Theme (Phase D)
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: 'dark', label: 'Dark', icon: Moon },
-                    { id: 'light', label: 'Light', icon: Sun },
-                    { id: 'system', label: 'System', icon: Monitor }
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    const isSelected = settings.theme === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        id={`theme-select-${item.id}`}
-                        onClick={() => updateSettings({ theme: item.id as ThemeMode })}
-                        className={`p-3 rounded-xl border flex flex-col items-center gap-1.5 transition-all ${
-                          isSelected
-                            ? 'bg-violet-950/30 border-violet-500 text-violet-300'
-                            : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                        }`}
-                      >
-                        <Icon className="w-4 h-4" />
-                        <span className="text-xs font-medium">{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Chat Bubble Accent Color */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-200 mb-2">
-                  Chat Bubble Accent Color
-                </label>
-                <div className="flex flex-wrap gap-2.5">
-                  {bubbleOptions.map((opt) => {
-                    const isSelected = settings.bubbleColor === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => updateSettings({ bubbleColor: opt.id })}
-                        className={`group flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-all ${
-                          isSelected
-                            ? 'bg-slate-800 border-slate-600 text-slate-100'
-                            : 'bg-slate-950/40 border-slate-800/80 text-slate-400 hover:text-slate-200'
-                        }`}
-                      >
-                        <span className={`w-3 h-3 rounded-full ${opt.class} flex-shrink-0`} />
-                        <span className="text-xs">{opt.label}</span>
-                        {isSelected && <Check className="w-3 h-3 text-violet-400 ml-1" />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Chat Wallpaper */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-200 mb-2">
-                  Chat Area Wallpaper
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {wallpaperOptions.map((opt) => {
-                    const isSelected = settings.chatWallpaper === opt.id;
-                    return (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => updateSettings({ chatWallpaper: opt.id })}
-                        className={`p-2.5 rounded-xl border text-left transition-all ${
-                          isSelected
-                            ? 'bg-violet-950/30 border-violet-500/80 text-violet-300'
-                            : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-medium">{opt.label}</span>
-                          {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Timestamp format toggle */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <div className="flex items-center gap-1.5">
-                    <Clock className="w-3.5 h-3.5 text-violet-400" />
-                    <span className="text-xs font-semibold text-slate-200">
-                      Message Timestamp Format
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Toggle between absolute timestamps (10:20 AM) and relative timestamps (5m ago)
-                  </p>
-                </div>
-                <div className="flex items-center bg-slate-900 p-1 rounded-lg border border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => updateSettings({ timestampFormat: 'absolute' })}
-                    className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
-                      settings.timestampFormat === 'absolute'
-                        ? 'bg-violet-600 text-white'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Absolute
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateSettings({ timestampFormat: 'relative' })}
-                    className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
-                      settings.timestampFormat === 'relative'
-                        ? 'bg-violet-600 text-white'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Relative
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ================= PRIVACY TAB ================= */}
-          {activeTab === 'privacy' && (
-            <div className="space-y-4">
-              {/* Read Receipts */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-semibold text-slate-200">Read Receipts</span>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Send double-tick read confirmations when you view messages
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={settings.readReceiptsEnabled}
-                    onChange={(e) => updateSettings({ readReceiptsEnabled: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
-                </label>
-              </div>
-
-              {/* Incognito Preference */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-semibold text-slate-200">Default Incognito Mode</span>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Automatically prefer RAM-only ephemeral storage for new chat sessions
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={settings.defaultIncognito}
-                    onChange={(e) => updateSettings({ defaultIncognito: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
-                </label>
-              </div>
-
-              {/* Last Seen Visibility */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-semibold text-slate-200">Online & Last Seen Status</span>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Allow verified contacts to see when you are active on GhostChat
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={settings.lastSeenVisibility}
-                    onChange={(e) => updateSettings({ lastSeenVisibility: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
-                </label>
-              </div>
-
-              {/* Blocked Users Section */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200">Blocked Users</span>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Blocked accounts cannot initiate conversations or send encrypted packets
-                    </p>
-                  </div>
-                  <span className="text-xs text-slate-500 font-mono">
-                    {blockedUsers.length} blocked
-                  </span>
-                </div>
-
-                {/* Add Block input */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={blockUsernameInput}
-                    onChange={(e) => setBlockUsernameInput(e.target.value)}
-                    placeholder="Username to block (e.g. charlie)"
-                    className="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleBlockUser}
-                    disabled={isBlocking || !blockUsernameInput.trim()}
-                    className="px-3 py-1.5 text-xs font-medium bg-rose-600/80 hover:bg-rose-600 text-white rounded-lg transition-colors disabled:opacity-50"
-                  >
-                    Block
-                  </button>
-                </div>
-
-                {/* Blocked List */}
-                {blockedUsers.length === 0 ? (
-                  <p className="text-[11px] text-slate-500 italic">No blocked users.</p>
-                ) : (
-                  <div className="space-y-1.5 pt-1">
-                    {blockedUsers.map((u) => (
-                      <div
-                        key={u.uuid}
-                        className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          <UserX className="w-3.5 h-3.5 text-rose-400" />
-                          <span className="text-slate-300 font-medium">@{u.username}</span>
-                          <span className="text-slate-500 text-[10px]">({u.displayName})</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => unblockUser(u.uuid)}
-                          className="text-[11px] text-violet-400 hover:text-violet-300"
-                        >
-                          Unblock
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* ================= NOTIFICATIONS TAB ================= */}
-          {activeTab === 'notifications' && (
-            <div className="space-y-4">
-              {/* Sound Notifications */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  {settings.soundEnabled ? (
-                    <Volume2 className="w-4 h-4 text-violet-400" />
-                  ) : (
-                    <VolumeX className="w-4 h-4 text-slate-500" />
-                  )}
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200">Sound Alerts</span>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      Play acoustic chime on incoming messages & notifications
-                    </p>
-                  </div>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={settings.soundEnabled}
-                    onChange={(e) => updateSettings({ soundEnabled: e.target.checked })}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
-                </label>
-              </div>
-
-              {/* Desktop Push Notifications */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-semibold text-slate-200">
-                    Desktop System Notifications
-                  </span>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    Receive background alerts when browser tab is inactive
-                  </p>
-                </div>
+          {/* Navigation Items */}
+          <nav className="flex-1 overflow-x-auto md:overflow-y-auto p-2 md:p-3 flex md:flex-col gap-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeTab === item.id;
+              return (
                 <button
-                  type="button"
-                  onClick={handleRequestDesktopNotifications}
-                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
-                    settings.desktopNotificationsEnabled
-                      ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
-                      : 'bg-violet-600 hover:bg-violet-500 text-white'
+                  key={item.id}
+                  id={`settings-nav-${item.id}`}
+                  onClick={() => setActiveTab(item.id as any)}
+                  className={`flex items-center space-x-3 px-3 py-2.5 rounded-xl text-left transition-all shrink-0 cursor-pointer ${
+                    isActive
+                      ? 'bg-violet-600 text-white shadow-md shadow-violet-600/30'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
                   }`}
                 >
-                  {settings.desktopNotificationsEnabled ? 'Enabled' : 'Request Permission'}
+                  <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
+                  <div className="min-w-0 flex-1 hidden md:block">
+                    <div className="text-xs font-semibold leading-tight">{item.label}</div>
+                    <div className={`text-[10px] truncate ${isActive ? 'text-violet-200' : 'text-slate-500'}`}>
+                      {item.desc}
+                    </div>
+                  </div>
+                  <span className="md:hidden text-xs font-medium">{item.label}</span>
                 </button>
-              </div>
+              );
+            })}
+          </nav>
 
-              {/* Per-Conversation Muting */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-slate-200">
-                    Conversation Mute Settings
-                  </span>
-                  <span className="text-[10px] text-slate-500">
-                    {settings.mutedConversations.length} muted
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400">
-                  Silence sound and push notifications for specific conversation threads.
-                </p>
+          {/* Sidebar Footer info */}
+          <div className="p-3 border-t border-slate-800/80 hidden md:flex items-center justify-between text-[11px] text-slate-500">
+            <span>YChat v1.2.0</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-emerald-950/60 text-emerald-400 border border-emerald-800/40">
+              End-to-End Encrypted
+            </span>
+          </div>
+        </div>
 
-                {conversations.length === 0 ? (
-                  <p className="text-[11px] text-slate-500 italic pt-1">
-                    No active conversations.
-                  </p>
-                ) : (
-                  <div className="space-y-1.5 pt-2">
-                    {conversations.map((c) => {
-                      const muted = isConversationMuted(c.id);
-                      return (
-                        <div
-                          key={c.id}
-                          className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800 text-xs"
+        {/* ================= RIGHT CONTENT AREA ================= */}
+        <div className="flex-1 flex flex-col overflow-hidden bg-slate-900">
+          {/* Header Bar */}
+          <div className="p-4 border-b border-slate-800/80 flex items-center justify-between bg-slate-900/90 backdrop-blur-xs">
+            <div>
+              <h3 className="text-sm font-bold text-white capitalize flex items-center gap-2">
+                {activeTab} Settings
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                {navItems.find((n) => n.id === activeTab)?.desc}
+              </p>
+            </div>
+            <button
+              id="settings-modal-close-btn"
+              onClick={onClose}
+              className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+              title="Close Settings"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Content Pane */}
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+            {/* ================= PROFILE TAB ================= */}
+            {activeTab === 'profile' && (
+              <form onSubmit={handleProfileSave} className="space-y-5 max-w-xl">
+                {/* Avatar Section */}
+                <div className="flex items-center space-x-4 p-4 rounded-2xl bg-slate-950/50 border border-slate-800/80">
+                  <div className="relative group">
+                    <Avatar
+                      name={displayName || user?.username || 'User'}
+                      avatarUrl={avatarUrl}
+                      size="lg"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white"
+                      title="Upload Avatar Image"
+                    >
+                      <Camera className="w-5 h-5" />
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarFileChange}
+                      className="hidden"
+                    />
+                  </div>
+
+                  <div className="flex-1 space-y-1">
+                    <h4 className="text-xs font-semibold text-slate-200">Profile Picture</h4>
+                    <p className="text-[11px] text-slate-400">
+                      Upload a square image (PNG, JPG, max 2MB) or specify an image URL below.
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-2.5 py-1 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition-colors cursor-pointer"
+                      >
+                        Upload Photo
+                      </button>
+                      {avatarUrl && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setAvatarUrl('');
+                            try {
+                              await updateUserProfile({ avatarUrl: '' });
+                            } catch (_) {}
+                          }}
+                          className="px-2.5 py-1 text-xs rounded-lg text-rose-400 hover:bg-rose-950/20 transition-colors cursor-pointer"
                         >
-                          <span className="text-slate-200 font-medium">
-                            @{c.recipientUsername} ({c.recipientDisplayName})
-                          </span>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div className="pt-2">
+                      <input
+                        type="url"
+                        value={avatarUrl.startsWith('data:') ? '(Uploaded Image File)' : avatarUrl}
+                        onChange={(e) => setAvatarUrl(e.target.value)}
+                        placeholder="Paste image URL (e.g. https://...)"
+                        className="w-full px-3 py-1.5 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Display Name */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                    Display Name
+                  </label>
+                  <input
+                    type="text"
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="e.g. Alex Morgan"
+                    maxLength={50}
+                    required
+                    className="w-full px-3.5 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    This is the name other contacts will see in chats and conversation lists.
+                  </p>
+                </div>
+
+                {/* Username (Read Only with Copy) */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                    Username (Unique Handle)
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <div className="flex-1 px-3.5 py-2 text-xs bg-slate-950/60 border border-slate-800/80 rounded-xl text-slate-400 font-mono flex items-center justify-between">
+                      <span>@{user?.username}</span>
+                      <span className="text-[10px] text-slate-500">Permanent handle</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(user?.username || '', 'username')}
+                      className="px-3 py-2 text-xs font-medium rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center space-x-1.5 transition-colors"
+                    >
+                      {copiedUsername ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedUsername ? 'Copied' : 'Copy'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* About / Bio */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                    About / Bio
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={about}
+                    onChange={(e) => setAbout(e.target.value)}
+                    placeholder="Hey there! I am using YChat."
+                    maxLength={140}
+                    className="w-full px-3.5 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all"
+                  />
+                  <div className="flex justify-between text-[11px] text-slate-500 mt-0.5">
+                    <span>A brief status displayed to your conversation partners.</span>
+                    <span>{about.length}/140</span>
+                  </div>
+                </div>
+
+                {/* Chat Background / Wallpaper URL */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                    Chat Background Image / Wallpaper URL
+                  </label>
+                  <p className="text-[11px] text-slate-400 mb-2">
+                    Set a personal wallpaper URL or upload a custom image. It syncs to your profile and applies to all chats.
+                  </p>
+                  <div className="flex gap-2 items-center mb-2">
+                    <input
+                      type="url"
+                      value={backgroundImageUrl.startsWith('data:') ? '(Uploaded Image File)' : backgroundImageUrl}
+                      onChange={(e) => setBackgroundImageUrl(e.target.value)}
+                      placeholder="Paste image URL (e.g. https://images.unsplash.com/...)"
+                      className="flex-1 px-3.5 py-2 text-xs bg-slate-950 border border-slate-800 rounded-xl text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => profileBackgroundFileRef.current?.click()}
+                      className="px-3 py-2 text-xs font-medium rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      <span>Upload</span>
+                    </button>
+                    <input
+                      ref={profileBackgroundFileRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={handleProfileBackgroundFileChange}
+                      className="hidden"
+                    />
+                    {backgroundImageUrl && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setBackgroundImageUrl('');
+                          setCustomWallpaperInput('');
+                          updateSettings({ chatWallpaper: 'default', customWallpaperUrl: '' });
+                          try {
+                            await updateUserProfile({ backgroundImage: '' });
+                          } catch (_) {}
+                        }}
+                        className="px-2.5 py-2 text-xs font-medium rounded-xl text-rose-400 hover:bg-rose-950/20 transition-colors cursor-pointer shrink-0"
+                        title="Remove Wallpaper"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {backgroundImageUrl && (
+                    <div className="flex items-center space-x-3 p-2 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                      <img
+                        src={backgroundImageUrl}
+                        alt="Background Preview"
+                        className="w-16 h-10 rounded-lg object-cover border border-slate-700 shadow-xs"
+                      />
+                      <span className="text-[11px] text-emerald-400 font-medium">
+                        Background preview active
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* User UUID for Safety / Verification */}
+                <div>
+                  <label className="block text-xs font-semibold text-slate-200 mb-1.5">
+                    Cryptographic User UUID
+                  </label>
+                  <div className="flex items-center space-x-2">
+                    <span className="flex-1 px-3 py-1.5 bg-slate-950/60 border border-slate-800/80 rounded-xl text-[11px] font-mono text-slate-400 truncate">
+                      {user?.uuid}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(user?.uuid || '', 'uuid')}
+                      className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-xl"
+                      title="Copy User UUID"
+                    >
+                      {copiedUuid ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Feedback */}
+                {profileError && <p className="text-xs text-rose-400">{profileError}</p>}
+                {profileSuccess && (
+                  <p className="text-xs text-emerald-400 flex items-center gap-1.5">
+                    <CheckCheck className="w-4 h-4" /> Profile updated successfully
+                  </p>
+                )}
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingProfile}
+                    className="px-5 py-2 rounded-xl text-xs font-semibold bg-violet-600 hover:bg-violet-500 text-white shadow-md shadow-violet-600/30 transition-all flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    {isSavingProfile && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>Save Changes</span>
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* ================= PRIVACY TAB ================= */}
+            {activeTab === 'privacy' && (
+              <div className="space-y-4 max-w-xl">
+                {/* Read Receipts */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200">Read Receipts (Double Checkmarks)</span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Send blue double-check confirmations when you view incoming messages.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.readReceiptsEnabled}
+                      onChange={(e) => updateSettings({ readReceiptsEnabled: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                  </label>
+                </div>
+
+                {/* Online & Last Seen Status */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200">Online & Last Seen Visibility</span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Allow active chat partners to see your real-time online status and when you were last active.
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.lastSeenVisibility}
+                      onChange={(e) => updateSettings({ lastSeenVisibility: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                  </label>
+                </div>
+
+                {/* Incognito Ephemeral Storage */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-slate-200">Default Incognito Mode</span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Automatically prefer RAM-only ephemeral storage for new conversations (wipes on tab close).
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={settings.defaultIncognito}
+                      onChange={(e) => updateSettings({ defaultIncognito: e.target.checked })}
+                      className="sr-only peer"
+                    />
+                    <div className="w-10 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                  </label>
+                </div>
+
+                {/* Blocked Users Section */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200">Blocked Contacts</span>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Blocked accounts cannot message you or see your online presence.
+                      </p>
+                    </div>
+                    <span className="text-xs text-slate-500 font-mono">{blockedUsers.length} blocked</span>
+                  </div>
+
+                  {/* Block by username input */}
+                  <div className="flex gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={blockUsernameInput}
+                      onChange={(e) => setBlockUsernameInput(e.target.value)}
+                      placeholder="Username to block (e.g. charlie)"
+                      className="flex-1 px-3.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-xl text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleBlockUser}
+                      disabled={isBlocking || !blockUsernameInput.trim()}
+                      className="px-4 py-1.5 text-xs font-semibold bg-rose-600/80 hover:bg-rose-600 text-white rounded-xl transition-colors disabled:opacity-50 flex items-center space-x-1"
+                    >
+                      {isBlocking ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <span>Block</span>}
+                    </button>
+                  </div>
+
+                  {/* Blocked List */}
+                  {blockedUsers.length === 0 ? (
+                    <p className="text-[11px] text-slate-500 italic py-1">No contacts currently blocked.</p>
+                  ) : (
+                    <div className="space-y-2 pt-2">
+                      {blockedUsers.map((u) => (
+                        <div
+                          key={u.uuid}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs"
+                        >
+                          <div className="flex items-center space-x-2.5">
+                            <Avatar name={u.displayName || u.username} avatarUrl={u.avatarUrl} size="sm" />
+                            <div>
+                              <div className="font-semibold text-slate-200">{u.displayName}</div>
+                              <div className="text-[10px] text-slate-500 font-mono">@{u.username}</div>
+                            </div>
+                          </div>
                           <button
                             type="button"
-                            onClick={() => toggleMuteConversation(c.id)}
-                            className={`px-2.5 py-1 text-[11px] rounded-md transition-colors ${
-                              muted
-                                ? 'bg-amber-600/20 text-amber-300 border border-amber-500/30'
-                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                            }`}
+                            onClick={() => unblockUser(u.uuid)}
+                            className="px-2.5 py-1 text-xs text-violet-400 hover:text-violet-300 hover:bg-violet-950/30 rounded-lg transition-colors"
                           >
-                            {muted ? 'Muted' : 'Mute'}
+                            Unblock
                           </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* ================= SECURITY TAB ================= */}
-          {activeTab === 'security' && (
-            <div className="space-y-4">
-              {/* Surfaced Security Audit Modal */}
-              <div className="p-4 rounded-xl bg-violet-950/20 border border-violet-500/30 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-violet-400" />
+            {/* ================= NOTIFICATIONS TAB ================= */}
+            {activeTab === 'notifications' && (
+              <div className="space-y-4 max-w-xl">
+                {/* Sound Alerts */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    {settings.soundEnabled ? (
+                      <Volume2 className="w-5 h-5 text-violet-400" />
+                    ) : (
+                      <VolumeX className="w-5 h-5 text-slate-500" />
+                    )}
                     <div>
-                      <h4 className="text-xs font-bold text-slate-100">
-                        Cryptographic Audit & Diagnostics
-                      </h4>
-                      <p className="text-[10px] text-slate-400">
-                        Zero-Knowledge proof validation, BLAKE3 chain inspection & ML-DSA signatures
+                      <span className="text-xs font-semibold text-slate-200">Message Audio Chimes</span>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Play sound notifications on incoming messages and delivery receipts.
                       </p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowSecurityAudit(true)}
-                    className="px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium shadow-sm transition-colors"
-                  >
-                    Open Audit
-                  </button>
+                  <div className="flex items-center space-x-3">
+                    <button
+                      type="button"
+                      onClick={() => playNotificationChime()}
+                      className="px-2.5 py-1 text-[11px] rounded-lg bg-slate-800 hover:bg-slate-700 text-violet-300 font-medium flex items-center space-x-1"
+                      title="Play test chime"
+                    >
+                      <Play className="w-3 h-3" />
+                      <span>Test</span>
+                    </button>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={settings.soundEnabled}
+                        onChange={(e) => updateSettings({ soundEnabled: e.target.checked })}
+                        className="sr-only peer"
+                      />
+                      <div className="w-10 h-5 bg-slate-800 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-violet-600"></div>
+                    </label>
+                  </div>
                 </div>
-              </div>
 
-              {/* Linked Devices Summary */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <Smartphone className="w-4 h-4 text-cyan-400" />
+                {/* Desktop Push Notifications */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-semibold text-slate-200">
-                      Multi-Device Keys & Management
-                    </span>
+                    <span className="text-xs font-semibold text-slate-200">System Desktop Notifications</span>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      View and revoke linked devices holding cryptographic prekeys
+                      Receive alerts on your operating system when YChat is running in background.
                     </p>
                   </div>
-                </div>
-                {onOpenDevices && (
                   <button
                     type="button"
-                    onClick={onOpenDevices}
-                    className="px-3 py-1.5 text-xs rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition-colors"
+                    onClick={handleRequestDesktopNotifications}
+                    className={`px-3.5 py-1.5 text-xs rounded-xl font-semibold transition-colors ${
+                      settings.desktopNotificationsEnabled
+                        ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/30'
+                        : 'bg-violet-600 hover:bg-violet-500 text-white shadow-md shadow-violet-600/20'
+                    }`}
                   >
-                    Manage Devices
+                    {settings.desktopNotificationsEnabled ? 'Permission Granted' : 'Enable Desktop Alerts'}
                   </button>
-                )}
-              </div>
-
-              {/* AES-256-GCM Storage status */}
-              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
-                  <Lock className="w-4 h-4" />
-                  <span>At-Rest Storage Encryption: AES-256-GCM Active</span>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  All local ratchet sessions, prekeys, and messages stored in IndexedDB are
-                  wrapped and encrypted under Domain 2 authenticated encryption with WebCrypto PBKDF2 key derivation.
-                </p>
-              </div>
-            </div>
-          )}
 
-          {/* ================= ACCOUNT TAB ================= */}
-          {activeTab === 'account' && (
-            <div className="space-y-5">
-              {/* Change Password */}
-              <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
-                <div className="flex items-center gap-2">
-                  <Lock className="w-4 h-4 text-violet-400" />
-                  <span className="text-xs font-semibold text-slate-200">
-                    Change Password (Argon2id Hash)
-                  </span>
-                </div>
-                <p className="text-[11px] text-slate-400">
-                  Updates your Supabase Auth credentials re-hashed with memory-hard Argon2id.
-                </p>
-
-                <form onSubmit={handlePasswordSubmit} className="space-y-3 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-slate-300 mb-1">
-                      Current Password
-                    </label>
-                    <input
-                      type="password"
-                      value={currentPassword}
-                      onChange={(e) => setCurrentPassword(e.target.value)}
-                      placeholder="••••••••"
-                      required
-                      className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
-                    />
+                {/* Muted Conversations */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200">Conversation Notification Mutes</span>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Silence alerts for individual chat threads.
+                      </p>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      {settings.mutedConversations.length} muted
+                    </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="block text-[11px] text-slate-300 mb-1">
-                        New Password (min 8 chars)
-                      </label>
-                      <input
-                        type="password"
-                        value={newPassword}
-                        onChange={(e) => setNewPassword(e.target.value)}
-                        placeholder="••••••••"
-                        required
-                        minLength={8}
-                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
-                      />
+                  {conversations.length === 0 ? (
+                    <p className="text-[11px] text-slate-500 italic py-1">No active conversations.</p>
+                  ) : (
+                    <div className="space-y-1.5 pt-1">
+                      {conversations.map((c) => {
+                        const muted = isConversationMuted(c.id);
+                        return (
+                          <div
+                            key={c.id}
+                            className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-xs"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <span className="font-semibold text-slate-200">{c.recipientDisplayName}</span>
+                              <span className="text-[10px] text-slate-500 font-mono">@{c.recipientUsername}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => toggleMuteConversation(c.id)}
+                              className={`px-3 py-1 text-xs rounded-lg font-medium transition-colors ${
+                                muted
+                                  ? 'bg-amber-600/20 text-amber-300 border border-amber-500/30'
+                                  : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                              }`}
+                            >
+                              {muted ? 'Muted' : 'Mute'}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-                    <div>
-                      <label className="block text-[11px] text-slate-300 mb-1">
-                        Confirm New Password
-                      </label>
-                      <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="••••••••"
-                        required
-                        minLength={8}
-                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
-                      />
-                    </div>
-                  </div>
-
-                  {passwordError && (
-                    <p className="text-xs text-rose-400">{passwordError}</p>
                   )}
-                  {passwordSuccess && (
-                    <p className="text-xs text-emerald-400 flex items-center gap-1">
-                      <Check className="w-3.5 h-3.5" /> Password updated successfully
-                    </p>
-                  )}
+                </div>
+              </div>
+            )}
 
-                  <div className="flex justify-end pt-1">
+            {/* ================= APPEARANCE TAB ================= */}
+            {activeTab === 'appearance' && (
+              <div className="space-y-6 max-w-2xl">
+                {/* Theme Selector (YChat Theme, Light Theme, System) */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-200 mb-2">
+                    Application Color Theme
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* YChat Theme */}
                     <button
-                      type="submit"
-                      disabled={isChangingPassword}
-                      className="px-3 py-1.5 text-xs font-medium bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                      type="button"
+                      id="theme-select-ychat"
+                      onClick={() => {
+                        setTheme('ychat');
+                        updateSettings({ theme: 'ychat' });
+                      }}
+                      className={`p-3.5 rounded-2xl border text-left flex flex-col space-y-2 transition-all cursor-pointer ${
+                        theme === 'ychat'
+                          ? 'bg-violet-950/40 border-violet-500 shadow-md shadow-violet-500/10 text-white ring-1 ring-violet-500'
+                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
                     >
-                      {isChangingPassword && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                      Update Password
+                      <div className="flex items-center justify-between">
+                        <div className="w-8 h-8 rounded-xl bg-[#111224] border border-violet-500/40 flex items-center justify-center text-violet-400">
+                          <Sparkles className="w-4 h-4" />
+                        </div>
+                        {theme === 'ychat' && <Check className="w-4 h-4 text-violet-400" />}
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-100">YChat Theme</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Signature dark theme with deep violet & indigo surfaces
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* Light Theme */}
+                    <button
+                      type="button"
+                      id="theme-select-light"
+                      onClick={() => {
+                        setTheme('light');
+                        updateSettings({ theme: 'light' });
+                      }}
+                      className={`p-3.5 rounded-2xl border text-left flex flex-col space-y-2 transition-all cursor-pointer ${
+                        theme === 'light'
+                          ? 'bg-violet-950/40 border-violet-500 shadow-md shadow-violet-500/10 text-white ring-1 ring-violet-500'
+                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-300 flex items-center justify-center text-amber-500">
+                          <Sun className="w-4 h-4" />
+                        </div>
+                        {theme === 'light' && <Check className="w-4 h-4 text-violet-400" />}
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-100">Light Theme</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Clean WhatsApp & Telegram inspired high-contrast palette
+                        </div>
+                      </div>
+                    </button>
+
+                    {/* System Theme */}
+                    <button
+                      type="button"
+                      id="theme-select-system"
+                      onClick={() => {
+                        setTheme('system');
+                        updateSettings({ theme: 'system' });
+                      }}
+                      className={`p-3.5 rounded-2xl border text-left flex flex-col space-y-2 transition-all cursor-pointer ${
+                        theme === 'system'
+                          ? 'bg-violet-950/40 border-violet-500 shadow-md shadow-violet-500/10 text-white ring-1 ring-violet-500'
+                          : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="w-8 h-8 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-cyan-400">
+                          <Monitor className="w-4 h-4" />
+                        </div>
+                        {theme === 'system' && <Check className="w-4 h-4 text-violet-400" />}
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-100">System Sync</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Automatically follows your OS dark/light preferences
+                        </div>
+                      </div>
                     </button>
                   </div>
-                </form>
-              </div>
-
-              {/* Delete Account (Danger Zone) */}
-              <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-900/50 space-y-3">
-                <div className="flex items-center gap-2 text-rose-400">
-                  <AlertTriangle className="w-4 h-4" />
-                  <span className="text-xs font-semibold">Danger Zone: Delete Account</span>
                 </div>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Permanently revokes all cryptographic key bundles, wipes your user record,
-                  and deletes your account from the authentication service.
-                </p>
 
-                <form onSubmit={handleDeleteAccountSubmit} className="space-y-2.5 pt-1">
-                  <div>
-                    <label className="block text-[11px] text-slate-300 mb-1">
-                      Type your username <span className="font-mono text-rose-400">"{user?.username}"</span> to confirm:
-                    </label>
-                    <input
-                      type="text"
-                      value={deleteConfirmText}
-                      onChange={(e) => setDeleteConfirmText(e.target.value)}
-                      placeholder={user?.username}
-                      className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-rose-900/50 rounded-lg text-rose-200 placeholder-slate-600 focus:outline-hidden focus:border-rose-500"
-                    />
+                {/* Chat Bubble Accent Color */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-200 mb-2">
+                    Outgoing Bubble Accent Color
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                    {bubbleOptions.map((opt) => {
+                      const isSelected = settings.bubbleColor === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => updateSettings({ bubbleColor: opt.id })}
+                          className={`flex items-center space-x-2.5 p-2.5 rounded-xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-slate-800 border-slate-600 text-white shadow-xs'
+                              : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          <span
+                            className="w-4 h-4 rounded-full flex-shrink-0 shadow-xs"
+                            style={{ backgroundColor: opt.hex }}
+                          />
+                          <span className="text-xs font-medium flex-1 text-left">{opt.label}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Chat Area Wallpaper */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-200 mb-2">
+                    Chat Area Wallpaper & Background
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {wallpaperOptions.map((opt) => {
+                      const isSelected = settings.chatWallpaper === opt.id;
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => updateSettings({ chatWallpaper: opt.id })}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-violet-950/30 border-violet-500 text-white'
+                              : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-200">{opt.label}</span>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-violet-400" />}
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">{opt.description}</p>
+                        </button>
+                      );
+                    })}
                   </div>
 
-                  <div className="flex justify-end">
-                    <button
-                      type="submit"
-                      disabled={isDeletingAccount || deleteConfirmText !== user?.username}
-                      className="px-3 py-1.5 text-xs font-medium bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5"
-                    >
-                      {isDeletingAccount ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Trash2 className="w-3.5 h-3.5" />
+                  {/* Custom Wallpaper URL Input if 'custom' is selected */}
+                  {settings.chatWallpaper === 'custom' && (
+                    <div className="mt-3 p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-semibold text-slate-200">
+                          Custom Wallpaper Image
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => wallpaperFileInputRef.current?.click()}
+                          className="px-2.5 py-1 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Upload File
+                        </button>
+                        <input
+                          ref={wallpaperFileInputRef}
+                          type="file"
+                          accept="image/*"
+                          onChange={handleWallpaperFileChange}
+                          className="hidden"
+                        />
+                      </div>
+
+                      <div className="flex gap-2">
+                        <input
+                          type="url"
+                          value={customWallpaperInput.startsWith('data:') ? '(Uploaded Image File)' : customWallpaperInput}
+                          onChange={(e) => {
+                            setCustomWallpaperInput(e.target.value);
+                            updateSettings({ chatWallpaper: 'custom', customWallpaperUrl: e.target.value.trim() });
+                          }}
+                          placeholder="Paste image URL (e.g. https://images.unsplash.com/...)"
+                          className="flex-1 px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const trimmed = customWallpaperInput.trim();
+                            updateSettings({ chatWallpaper: 'custom', customWallpaperUrl: trimmed });
+                            setBackgroundImageUrl(trimmed);
+                            try {
+                              await updateUserProfile({ backgroundImage: trimmed });
+                            } catch (_) {}
+                          }}
+                          className="px-3.5 py-1.5 text-xs font-semibold bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors cursor-pointer"
+                        >
+                          Apply
+                        </button>
+                      </div>
+
+                      {settings.customWallpaperUrl && (
+                        <div className="flex items-center justify-between pt-1">
+                          <div className="flex items-center space-x-2.5">
+                            <img
+                              src={settings.customWallpaperUrl}
+                              alt="Wallpaper Preview"
+                              className="w-16 h-10 rounded-lg object-cover border border-slate-700 shadow-sm"
+                            />
+                            <span className="text-[11px] text-emerald-400 font-medium">
+                              Wallpaper active
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCustomWallpaperInput('');
+                              updateSettings({ chatWallpaper: 'default', customWallpaperUrl: '' });
+                            }}
+                            className="text-xs text-rose-400 hover:underline cursor-pointer"
+                          >
+                            Remove
+                          </button>
+                        </div>
                       )}
-                      Delete Account Permanently
+                    </div>
+                  )}
+                </div>
+
+                {/* Font Size & Timestamp Format */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {/* Timestamp Format */}
+                  <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <Clock className="w-4 h-4 text-violet-400" />
+                      <span className="text-xs font-semibold text-slate-200">Timestamp Format</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => updateSettings({ timestampFormat: 'absolute' })}
+                        className={`py-1.5 px-2 text-xs rounded-lg font-medium transition-colors ${
+                          settings.timestampFormat === 'absolute'
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Absolute (10:45 AM)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => updateSettings({ timestampFormat: 'relative' })}
+                        className={`py-1.5 px-2 text-xs rounded-lg font-medium transition-colors ${
+                          settings.timestampFormat === 'relative'
+                            ? 'bg-violet-600 text-white'
+                            : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        Relative (2m ago)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Font Size */}
+                  <div className="p-3.5 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-2">
+                    <div className="flex items-center space-x-2">
+                      <Type className="w-4 h-4 text-violet-400" />
+                      <span className="text-xs font-semibold text-slate-200">Chat Text Size</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1.5 pt-1">
+                      {(['small', 'medium', 'large'] as FontSize[]).map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => updateSettings({ fontSize: s })}
+                          className={`py-1.5 px-2 text-xs rounded-lg font-medium capitalize transition-colors ${
+                            (settings.fontSize || 'medium') === s
+                              ? 'bg-violet-600 text-white'
+                              : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ================= SECURITY TAB ================= */}
+            {activeTab === 'security' && (
+              <div className="space-y-4 max-w-xl">
+                {/* Security Audit Diagnostic */}
+                <div className="p-4 rounded-2xl bg-violet-950/20 border border-violet-500/30 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-9 h-9 rounded-xl bg-violet-900/50 border border-violet-500/40 flex items-center justify-center text-violet-300">
+                        <ShieldCheck className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-white">Cryptographic Security Verification</h4>
+                        <p className="text-[11px] text-slate-400">
+                          Verify zero-knowledge proof, post-quantum ratchet keys, and safety numbers.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowSecurityAudit(true)}
+                      className="px-3.5 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold shadow-md transition-colors"
+                    >
+                      Audit Session
                     </button>
                   </div>
-                </form>
-              </div>
-            </div>
-          )}
-        </div>
+                </div>
 
-        {/* Footer */}
-        <div className="p-3 border-t border-slate-800 bg-slate-900/60 flex items-center justify-between">
-          <span className="text-[10px] text-slate-500 font-mono">
-            User: {user?.username}
-          </span>
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-xs text-slate-300 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors"
-          >
-            Done
-          </button>
+                {/* Linked Devices */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 flex items-center justify-between">
+                  <div className="flex items-center space-x-3">
+                    <Smartphone className="w-5 h-5 text-cyan-400" />
+                    <div>
+                      <span className="text-xs font-semibold text-slate-200">Linked Device Management</span>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Current active device: <span className="font-mono text-slate-300">{deviceId || 'Web Client'}</span>
+                      </p>
+                    </div>
+                  </div>
+                  {onOpenDevices && (
+                    <button
+                      type="button"
+                      onClick={onOpenDevices}
+                      className="px-3 py-1.5 text-xs rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition-colors"
+                    >
+                      Manage Devices
+                    </button>
+                  )}
+                </div>
+
+                {/* At-Rest Storage */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-xs font-semibold text-emerald-400">
+                    <Lock className="w-4 h-4" />
+                    <span>At-Rest Storage Encryption Active (AES-256-GCM)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Local messages, cryptographic sessions, and ratchet chains stored in your browser
+                    are secured using authenticated AES-256-GCM encryption with local WebCrypto key derivation.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* ================= ACCOUNT TAB ================= */}
+            {activeTab === 'account' && (
+              <div className="space-y-6 max-w-xl">
+                {/* Change Password Form */}
+                <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800/80 space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <Lock className="w-4 h-4 text-violet-400" />
+                    <span className="text-xs font-bold text-slate-200">Change Account Password</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Update your account credentials. Securely re-hashed with memory-hard Argon2id.
+                  </p>
+
+                  <form onSubmit={handlePasswordSubmit} className="space-y-3 pt-1">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                        Current Password
+                      </label>
+                      <input
+                        type="password"
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        placeholder="••••••••"
+                        required
+                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                          New Password (min 8 chars)
+                        </label>
+                        <input
+                          type="password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="••••••••"
+                          required
+                          minLength={8}
+                          className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                          Confirm New Password
+                        </label>
+                        <input
+                          type="password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          placeholder="••••••••"
+                          required
+                          minLength={8}
+                          className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                        />
+                      </div>
+                    </div>
+
+                    {passwordError && <p className="text-xs text-rose-400">{passwordError}</p>}
+                    {passwordSuccess && (
+                      <p className="text-xs text-emerald-400 flex items-center gap-1">
+                        <Check className="w-3.5 h-3.5" /> Password updated successfully
+                      </p>
+                    )}
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        disabled={isChangingPassword}
+                        className="px-4 py-1.5 text-xs font-semibold bg-violet-600 hover:bg-violet-500 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center space-x-1.5"
+                      >
+                        {isChangingPassword && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        <span>Update Password</span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                {/* Danger Zone: Delete Account */}
+                <div className="p-4 rounded-2xl bg-rose-950/20 border border-rose-900/40 space-y-3">
+                  <div className="flex items-center space-x-2 text-rose-400">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span className="text-xs font-bold">Danger Zone: Delete Account</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Permanently revokes all cryptographic key bundles, wipes your user record,
+                    and deletes your account from the authentication service.
+                  </p>
+
+                  <form onSubmit={handleDeleteAccountSubmit} className="space-y-2.5 pt-1">
+                    <div>
+                      <label className="block text-[11px] text-slate-300 mb-1">
+                        Type your username <span className="font-mono text-rose-400 font-bold">"{user?.username}"</span> to confirm:
+                      </label>
+                      <input
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        placeholder={user?.username}
+                        className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-rose-900/50 rounded-lg text-rose-200 placeholder-slate-600 focus:outline-hidden focus:border-rose-500"
+                      />
+                    </div>
+
+                    <div className="flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={isDeletingAccount || deleteConfirmText !== user?.username}
+                        className="px-4 py-1.5 text-xs font-semibold bg-rose-600 hover:bg-rose-500 text-white rounded-lg transition-colors disabled:opacity-40 flex items-center space-x-1.5 cursor-pointer shadow-md"
+                      >
+                        {isDeletingAccount ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>Delete Account Permanently</span>
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Modal Bottom Footer */}
+          <div className="p-3.5 border-t border-slate-800/80 bg-slate-900/90 flex items-center justify-between">
+            <span className="text-[11px] text-slate-500 font-mono">
+              Signed in as: <strong className="text-slate-300">{user?.displayName || user?.username}</strong>
+            </span>
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer"
+            >
+              Done
+            </button>
+          </div>
         </div>
       </div>
 

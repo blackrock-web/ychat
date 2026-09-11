@@ -18,6 +18,8 @@ class WebSocketManager {
   private clients = new Map<WebSocket, ClientSocket>();
   // In-memory routing structure: authenticated_user_uuid -> authorized active connection
   private userSockets = new Map<string, WebSocket>();
+  // In-memory presence tracking: authenticated_user_uuid -> { status, lastSeen }
+  private userPresence = new Map<string, { status: 'online' | 'away' | 'offline'; lastSeen: number }>();
 
   init(server: Server) {
     this.wss = new WebSocketServer({ server, path: '/ws' });
@@ -62,6 +64,7 @@ class WebSocketManager {
         this.clients.set(ws, client);
         // Logical destination mapping: authenticated_user_uuid -> authorized active connection
         this.userSockets.set(userId, ws);
+        this.userPresence.set(userId, { status: 'online', lastSeen: Date.now() });
 
         ws.send(JSON.stringify({
           type: 'connected',
@@ -71,6 +74,21 @@ class WebSocketManager {
         }));
 
         this.broadcastPresence(userId, 'online');
+
+        // Send existing presences of all contacts who share a conversation with this user
+        const sharedIds = db.getUserSharedParticipantIds(userId);
+        const presences = sharedIds.map((pId) => {
+          const p = this.userPresence.get(pId) || { status: 'offline', lastSeen: 0 };
+          return {
+            userUuid: pId,
+            status: p.status,
+            lastSeen: p.lastSeen
+          };
+        });
+        ws.send(JSON.stringify({
+          type: 'presence_batch',
+          presences
+        }));
 
         // Recipient login sync check: verify pending offline messages for this user upon connection
         this.deliverPendingMessagesOnLogin(userId, ws);
@@ -86,10 +104,20 @@ class WebSocketManager {
 
         ws.on('close', () => {
           this.clients.delete(ws);
-          if (this.userSockets.get(userId) === ws) {
-            this.userSockets.delete(userId);
+          let hasOtherConnection = false;
+          for (const c of this.clients.values()) {
+            if (c.userId === userId) {
+              hasOtherConnection = true;
+              break;
+            }
           }
-          this.broadcastPresence(userId, 'offline');
+          if (!hasOtherConnection) {
+            if (this.userSockets.get(userId) === ws) {
+              this.userSockets.delete(userId);
+            }
+            this.userPresence.set(userId, { status: 'offline', lastSeen: Date.now() });
+            this.broadcastPresence(userId, 'offline');
+          }
         });
 
         ws.on('pong', () => {
@@ -268,25 +296,14 @@ class WebSocketManager {
         details: { checkResult: 'SUCCESS', verifiedParticipantUserId: senderUserId }
       });
 
-      // 4. Offline recipient policy & 15-minute TTL
-      const isRecipientOnline = this.isUserOnline(recipientUserId);
-      if (!isRecipientOnline && env.allowOfflineStorage !== true) {
-        const recipientUser = db.findUserById(recipientUserId);
-        client.ws.send(JSON.stringify({
-          type: 'offline_warning',
-          code: 409,
-          requiresOfflineConfirmation: true,
-          recipientUuid: recipientUserId,
-          recipientName: recipientUser?.displayName || recipientUser?.username || 'Recipient',
-          message: 'Recipient is offline. Sender authorization required for 15-minute temporary queue.'
-        }));
-        return;
-      }
-
-      // 5. Store in DB with 15-minute expiration
+      // 4. Offline recipient policy & configurable retention (default 24h = 1440m, max 7d = 10080m)
+      const SERVER_MAX_RETENTION_MINUTES = 7 * 24 * 60; // 10080 minutes = 7 days
+      const requestedRetention = Number(env.retentionMinutes || env.offlineRetentionMinutes || data.retentionMinutes || 1440);
+      const retentionMinutes = Math.min(Math.max(requestedRetention, 5), SERVER_MAX_RETENTION_MINUTES);
       const now = new Date();
-      const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+      const expiresAt = new Date(now.getTime() + retentionMinutes * 60 * 1000).toISOString();
 
+      // 5. Store in DB with expiration (strictly encrypted ciphertext, zero plaintext)
       const record = db.storeMessage({
         conversationId: env.conversationId,
         senderUserId,
@@ -346,7 +363,42 @@ class WebSocketManager {
       } else if (data.status === 'read') {
         db.markRead(data.messageId);
       }
-      this.sendReceiptToConversation(convId, data.clientMessageId || data.messageId, data.status);
+      this.sendReceiptToConversation(
+        convId,
+        data.clientMessageId || data.messageId,
+        data.status,
+        data.failureCategory,
+        data.reason
+      );
+    } else if (data.type === 'reaction') {
+      const convId = data.conversationId;
+      if (!convId || !db.isUserMemberOfConversation(client.userId, convId)) {
+        client.ws.send(JSON.stringify({
+          type: 'error',
+          code: 403,
+          message: 'Forbidden: You are not authorized to react in this conversation'
+        }));
+        return;
+      }
+
+      this.sendReactionToConversation(convId, {
+        clientMessageId: data.clientMessageId || data.messageId,
+        messageId: data.messageId,
+        userUuid: client.userId,
+        emoji: data.emoji,
+        action: data.action || 'toggle'
+      });
+    } else if (data.type === 'typing') {
+      const convId = data.conversationId;
+      if (!convId || !db.isUserMemberOfConversation(client.userId, convId)) {
+        return;
+      }
+      this.sendTypingToConversation(convId, client.userId, !!data.isTyping);
+    } else if (data.type === 'presence') {
+      const status: 'online' | 'away' | 'offline' =
+        data.status === 'away' ? 'away' : data.status === 'offline' ? 'offline' : 'online';
+      this.userPresence.set(client.userId, { status, lastSeen: Date.now() });
+      this.broadcastPresence(client.userId, status);
     }
   }
 
@@ -384,13 +436,21 @@ class WebSocketManager {
     return false;
   }
 
-  sendReceiptToConversation(conversationId: string, clientMessageId: string, status: string) {
+  sendReceiptToConversation(
+    conversationId: string,
+    clientMessageId: string,
+    status: string,
+    failureCategory?: string,
+    reason?: string
+  ) {
     const memberIds = new Set(db.getConversationMembers(conversationId));
     const payload = JSON.stringify({
       type: 'receipt',
       conversationId,
       clientMessageId,
-      status
+      status,
+      failureCategory,
+      reason
     });
 
     this.clients.forEach((c) => {
@@ -400,12 +460,45 @@ class WebSocketManager {
     });
   }
 
-  private broadcastPresence(userId: string, status: 'online' | 'offline') {
+  sendReactionToConversation(conversationId: string, payload: { clientMessageId: string; messageId?: string; userUuid: string; emoji: string; action?: string }) {
+    const memberIds = new Set(db.getConversationMembers(conversationId));
+    const dataStr = JSON.stringify({
+      type: 'reaction',
+      conversationId,
+      ...payload
+    });
+
+    this.clients.forEach((c) => {
+      if (memberIds.has(c.userId) && c.ws.readyState === WebSocket.OPEN) {
+        c.ws.send(dataStr);
+      }
+    });
+  }
+
+  sendTypingToConversation(conversationId: string, senderUserId: string, isTyping: boolean) {
+    const memberIds = new Set(db.getConversationMembers(conversationId));
+    const payload = JSON.stringify({
+      type: 'typing',
+      conversationId,
+      userUuid: senderUserId,
+      isTyping
+    });
+
+    this.clients.forEach((c) => {
+      if (c.userId !== senderUserId && memberIds.has(c.userId) && c.ws.readyState === WebSocket.OPEN) {
+        c.ws.send(payload);
+      }
+    });
+  }
+
+  private broadcastPresence(userId: string, status: 'online' | 'away' | 'offline') {
     const sharedUserIds = new Set(db.getUserSharedParticipantIds(userId));
+    const record = this.userPresence.get(userId) || { status, lastSeen: Date.now() };
     const payload = JSON.stringify({
       type: 'presence',
       userUuid: userId,
-      status
+      status,
+      lastSeen: record.lastSeen
     });
 
     this.clients.forEach((client) => {
@@ -414,6 +507,10 @@ class WebSocketManager {
         client.ws.send(payload);
       }
     });
+  }
+
+  getUserPresence(userId: string): { status: 'online' | 'away' | 'offline'; lastSeen: number } {
+    return this.userPresence.get(userId) || { status: 'offline', lastSeen: 0 };
   }
 
   sendNotificationToUser(userId: string, notification: {

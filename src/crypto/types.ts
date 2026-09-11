@@ -89,7 +89,34 @@ export interface RatchetSession {
   handshakePacket?: HandshakePacket;
 }
 
-export type DeliveryStatus = 'queued_offline' | 'sending' | 'sent' | 'delivered' | 'read';
+export type DeliveryStatus =
+  | 'queued_offline'
+  | 'sending'
+  | 'sent'
+  | 'delivered'
+  | 'read'
+  | 'failed'
+  | 'retrying'
+  | 'waiting_for_recipient'
+  | 'expired';
+
+export type MessageFailureCategory =
+  | 'NETWORK_ERROR'
+  | 'CONNECTION_LOST'
+  | 'SERVER_ERROR'
+  | 'AUTHENTICATION_EXPIRED'
+  | 'RECIPIENT_UNAVAILABLE'
+  | 'VERIFICATION_FAILED'
+  | 'MESSAGE_EXPIRED'
+  | 'RATE_LIMITED'
+  | 'UNKNOWN_ERROR';
+
+export interface FileAttachment {
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  dataUrl: string;
+}
 
 export interface DecryptedMessage {
   id: string;
@@ -104,6 +131,12 @@ export interface DecryptedMessage {
   status: DeliveryStatus;
   tamperVerified?: boolean;
   expiresAt?: string;
+  attachment?: FileAttachment;
+  reactions?: Record<string, string[]>; // emoji -> array of user UUIDs
+  failureReason?: MessageFailureCategory;
+  errorMessage?: string; // Sanitized, human-friendly message e.g. "Message couldn't be delivered"
+  retryCount?: number;
+  retryable?: boolean;
 }
 
 export interface Blake3ChainState {

@@ -11,7 +11,9 @@ export interface DBUser {
   email: string;
   displayName: string;
   avatarUrl?: string;
+  backgroundImage?: string;
   about?: string;
+  preferences?: Record<string, any>;
   blockedUserIds?: string[];
   createdAt: string;
   updatedAt: string;
@@ -270,7 +272,7 @@ class StorageEngine {
       }));
   }
 
-  updateUserProfile(userId: string, updates: { displayName?: string; about?: string; avatarUrl?: string }): DBUser | undefined {
+  updateUserProfile(userId: string, updates: { displayName?: string; about?: string; avatarUrl?: string; backgroundImage?: string; preferences?: Record<string, any> }): DBUser | undefined {
     const user = this.findUserById(userId);
     if (!user) return undefined;
 
@@ -283,9 +285,29 @@ class StorageEngine {
     if (updates.avatarUrl !== undefined) {
       user.avatarUrl = updates.avatarUrl;
     }
+    if (updates.backgroundImage !== undefined) {
+      user.backgroundImage = updates.backgroundImage;
+    }
+    if (updates.preferences !== undefined) {
+      user.preferences = { ...(user.preferences || {}), ...updates.preferences };
+    }
     user.updatedAt = new Date().toISOString();
     this.persist();
     return user;
+  }
+
+  getUserPreferences(userId: string): Record<string, any> {
+    const user = this.findUserById(userId);
+    return user?.preferences || {};
+  }
+
+  updateUserPreferences(userId: string, prefs: Record<string, any>): Record<string, any> {
+    const user = this.findUserById(userId);
+    if (!user) return {};
+    user.preferences = { ...(user.preferences || {}), ...prefs };
+    user.updatedAt = new Date().toISOString();
+    this.persist();
+    return user.preferences;
   }
 
   blockUser(userId: string, targetUserId: string): void {
@@ -481,7 +503,9 @@ class StorageEngine {
           return {
             uuid: m.userId,
             username: u?.username || 'unknown',
-            displayName: u?.displayName || 'Unknown'
+            displayName: u?.displayName || 'Unknown',
+            avatarUrl: u?.avatarUrl,
+            about: u?.about
           };
         });
 

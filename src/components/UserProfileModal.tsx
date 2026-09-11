@@ -38,8 +38,9 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
 
   // Form fields
   const [displayName, setDisplayName] = useState(user?.displayName || '');
-  const [about, setAbout] = useState(user?.about || 'Available on GhostChat');
+  const [about, setAbout] = useState(user?.about || 'Available on YChat');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl || '');
+  const [backgroundImage, setBackgroundImage] = useState(user?.backgroundImage || '');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [copiedUuid, setCopiedUuid] = useState(false);
@@ -49,13 +50,15 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
   const [showSafetyModal, setShowSafetyModal] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const bgFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Sync state with user context on open
   useEffect(() => {
     if (user) {
       setDisplayName(user.displayName || '');
-      setAbout(user.about || 'Available on GhostChat');
+      setAbout(user.about || 'Available on YChat');
       setAvatarUrl(user.avatarUrl || '');
+      setBackgroundImage(user.backgroundImage || '');
     }
   }, [user, isOpen]);
 
@@ -100,9 +103,36 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
     }
 
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = reader.result as string;
       setAvatarUrl(dataUrl);
+      try {
+        await updateUserProfile({ avatarUrl: dataUrl });
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      } catch (_) {}
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleBgFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 3 * 1024 * 1024) {
+      alert('Wallpaper image size must be under 3MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result as string;
+      setBackgroundImage(dataUrl);
+      try {
+        await updateUserProfile({ backgroundImage: dataUrl });
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+      } catch (_) {}
     };
     reader.readAsDataURL(file);
   };
@@ -114,7 +144,8 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
       await updateUserProfile({
         displayName: displayName.trim(),
         about: about.trim(),
-        avatarUrl
+        avatarUrl,
+        backgroundImage: backgroundImage.trim()
       });
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2500);
@@ -276,6 +307,15 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                     </button>
                   )}
                 </div>
+                <div className="w-full mt-3">
+                  <input
+                    type="url"
+                    value={avatarUrl.startsWith('data:') ? '(Uploaded Image)' : avatarUrl}
+                    onChange={(e) => setAvatarUrl(e.target.value)}
+                    placeholder="Or paste profile image URL (https://...)"
+                    className="w-full px-3 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-200 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                  />
+                </div>
               </div>
 
               {/* Display Name */}
@@ -345,6 +385,57 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* Wallpaper / Background Image URL */}
+              <div>
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  Chat Wallpaper / Background Image
+                </label>
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="url"
+                    value={backgroundImage.startsWith('data:') ? '(Uploaded Image File)' : backgroundImage}
+                    onChange={(e) => setBackgroundImage(e.target.value)}
+                    placeholder="Paste image URL (https://...)"
+                    className="flex-1 px-3 py-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-hidden focus:border-violet-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => bgFileInputRef.current?.click()}
+                    className="px-3 py-2 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors cursor-pointer shrink-0"
+                  >
+                    Upload
+                  </button>
+                  <input
+                    ref={bgFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleBgFileChange}
+                    className="hidden"
+                  />
+                  {backgroundImage && (
+                    <button
+                      type="button"
+                      onClick={() => setBackgroundImage('')}
+                      className="px-2.5 py-2 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-950/20 rounded-lg transition-colors cursor-pointer shrink-0"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+                {backgroundImage && (
+                  <div className="flex items-center gap-3 p-2 bg-slate-950/60 border border-slate-800/80 rounded-lg">
+                    <img
+                      src={backgroundImage}
+                      alt="Wallpaper preview"
+                      className="w-16 h-10 object-cover rounded-md border border-slate-700 shadow-xs"
+                    />
+                    <span className="text-[11px] text-emerald-400 font-medium">
+                      Background preview active
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* Action buttons */}

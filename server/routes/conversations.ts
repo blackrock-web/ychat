@@ -44,12 +44,13 @@ const handleCreateConversation = (req: AuthenticatedRequest, res: Response) => {
     }
   });
 
+  const currentUser = db.findUserById(userId);
   return res.status(200).json({
     conversationId: conv.id,
     type: conv.conversationType,
     members: [
-      { uuid: userId, username: req.user!.username },
-      { uuid: recipient.id, username: recipient.username, displayName: recipient.displayName }
+      { uuid: userId, username: req.user!.username, displayName: currentUser?.displayName || req.user!.username, avatarUrl: currentUser?.avatarUrl },
+      { uuid: recipient.id, username: recipient.username, displayName: recipient.displayName, avatarUrl: recipient.avatarUrl }
     ],
     createdAt: conv.createdAt
   });
@@ -86,7 +87,8 @@ conversationsRouter.get('/:id', requireAuth, requireConversationMember('id'), (r
     return {
       uuid: mId,
       username: u?.username || 'unknown',
-      displayName: u?.displayName || 'Unknown'
+      displayName: u?.displayName || 'Unknown',
+      avatarUrl: u?.avatarUrl
     };
   });
 

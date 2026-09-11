@@ -6,6 +6,7 @@ export interface AvatarProps {
   avatarUrl?: string;
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
   isOnline?: boolean;
+  presenceStatus?: 'online' | 'away' | 'offline';
   isVerified?: boolean;
   verified?: boolean;
   shape?: 'rounded' | 'circle';
@@ -89,6 +90,7 @@ export const Avatar: React.FC<AvatarProps> = ({
   avatarUrl,
   size = 'md',
   isOnline,
+  presenceStatus,
   isVerified,
   verified,
   shape = 'circle',
@@ -96,11 +98,20 @@ export const Avatar: React.FC<AvatarProps> = ({
   onClick,
   id
 }) => {
+  const [imgFailed, setImgFailed] = React.useState(false);
+
+  React.useEffect(() => {
+    setImgFailed(false);
+  }, [avatarUrl]);
+
   const sizeConfig = SIZE_MAP[size];
   const roundedClass = shape === 'circle' ? 'rounded-full' : 'rounded-2xl';
   const gradient = getGradient(name);
   const initials = getInitials(name);
   const hasVerifiedBadge = isVerified ?? verified;
+
+  const effectivePresence = presenceStatus ?? (isOnline !== undefined ? (isOnline ? 'online' : 'offline') : undefined);
+  const showImage = !!avatarUrl && !imgFailed;
 
   return (
     <div
@@ -112,32 +123,39 @@ export const Avatar: React.FC<AvatarProps> = ({
     >
       <div
         className={`${sizeConfig.container} ${roundedClass} flex items-center justify-center overflow-hidden shadow-sm border border-slate-700/40 ${
-          avatarUrl ? 'bg-slate-800' : `bg-gradient-to-tr ${gradient} text-white`
+          showImage ? 'bg-slate-800' : `bg-gradient-to-tr ${gradient} text-white`
         }`}
       >
-        {avatarUrl ? (
+        {showImage ? (
           <img
             src={avatarUrl}
             alt={name}
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"
-            onError={(e) => {
-              // Fallback to initials if image fails to load
-              (e.currentTarget as HTMLElement).style.display = 'none';
-            }}
+            onError={() => setImgFailed(true)}
           />
         ) : (
           <span className="tracking-tight">{initials}</span>
         )}
       </div>
 
-      {/* Online indicator dot */}
-      {isOnline !== undefined && (
+      {/* Online/Away/Offline indicator dot */}
+      {effectivePresence !== undefined && !hasVerifiedBadge && (
         <span
           className={`absolute ${sizeConfig.dot} rounded-full border-2 border-slate-900 ${
-            isOnline ? 'bg-emerald-400' : 'bg-slate-500'
+            effectivePresence === 'online'
+              ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]'
+              : effectivePresence === 'away'
+              ? 'bg-amber-400'
+              : 'bg-slate-500'
           }`}
-          title={isOnline ? 'Online' : 'Offline'}
+          title={
+            effectivePresence === 'online'
+              ? 'Online'
+              : effectivePresence === 'away'
+              ? 'Away'
+              : 'Offline'
+          }
         />
       )}
 

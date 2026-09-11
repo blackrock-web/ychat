@@ -8,7 +8,8 @@ import {
   LogOut,
   Bell,
   Settings,
-  User as UserIcon
+  Search,
+  X
 } from 'lucide-react';
 import { Avatar } from './Avatar';
 
@@ -27,6 +28,9 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const {
     user,
+    activeConversation,
+    searchKeyword,
+    setSearchKeyword,
     isSimulatedOffline,
     toggleSimulatedOffline,
     pendingQueueCount,
@@ -35,27 +39,54 @@ export const Header: React.FC<HeaderProps> = ({
   } = useChat();
 
   return (
-    <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 md:px-6 flex items-center justify-between z-20">
+    <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 md:px-6 flex items-center justify-between z-20 gap-2">
       {/* Brand & App Info */}
-      <div className="flex items-center space-x-3">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-violet-500/20">
-          <Lock className="w-4 h-4 text-white" />
-        </div>
+      <div className="flex items-center space-x-3 shrink-0">
+        <img
+          src="/1.jpg"
+          alt="YChat Logo"
+          className="w-9 h-9 rounded-xl object-cover shadow-md shadow-violet-500/20 border border-violet-500/30"
+        />
         <div>
           <div className="flex items-center space-x-2">
-            <h1 className="text-base font-bold text-white tracking-tight">GhostChat Ultra-X</h1>
+            <h1 className="text-base font-bold text-white tracking-tight">ychat</h1>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-950 text-violet-300 border border-violet-800/60">
-              E2EE Post-Quantum
+              Encrypted
             </span>
           </div>
-          <p className="text-[11px] text-slate-400 hidden sm:block">
-            Zero-Knowledge • ML-KEM-1024 • ChaCha20-Poly1305 • AES-256-GCM
+          <p className="text-[11px] text-slate-400 hidden lg:block">
+            Private & Secure Messaging
           </p>
         </div>
       </div>
 
+      {/* Search Bar for filtering messages in current conversation */}
+      <div className="flex-1 max-w-xs md:max-w-sm mx-1 sm:mx-3">
+        <div className="relative flex items-center">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 pointer-events-none" />
+          <input
+            id="header-message-search-input"
+            type="text"
+            placeholder={activeConversation ? "Search messages in chat..." : "Search messages..."}
+            value={searchKeyword}
+            onChange={(e) => setSearchKeyword(e.target.value)}
+            className="w-full pl-8 pr-8 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-hidden focus:border-violet-500 focus:ring-1 focus:ring-violet-500/30 transition-all"
+          />
+          {searchKeyword && (
+            <button
+              id="header-clear-search-btn"
+              onClick={() => setSearchKeyword('')}
+              className="absolute right-2 text-slate-400 hover:text-slate-200 p-0.5 rounded-sm cursor-pointer"
+              title="Clear search"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Controls & Connection Status */}
-      <div className="flex items-center space-x-2 sm:space-x-3">
+      <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
         {/* Offline Simulation Button */}
         <button
           id="header-offline-toggle-btn"
@@ -139,6 +170,7 @@ export const Header: React.FC<HeaderProps> = ({
                 name={user.displayName || user.username}
                 avatarUrl={user.avatarUrl}
                 size="sm"
+                presenceStatus="online"
               />
               <div className="text-left hidden lg:block">
                 <div className="text-xs font-semibold text-slate-200 truncate max-w-[110px]">

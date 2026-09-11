@@ -1,15 +1,18 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { syncEngine, ConnectionState } from '../storage/syncEngine';
 import { clientDb, StoredConversation } from '../storage/db';
 import { generateDeviceKeys, generateDeterministicDeviceKeys, getPublicBundlePayload, DeviceKeyBundle } from '../crypto/keys';
-import { DecryptedMessage, PrekeyBundle } from '../crypto/types';
+import { DecryptedMessage, PrekeyBundle, FileAttachment } from '../crypto/types';
 import { AppSettings, DEFAULT_SETTINGS, AppNotification, BlockedUser } from '../types/settings';
+import { useTheme } from './ThemeContext';
+import { userPreferencesService } from '../services/userPreferencesService';
 
 export interface UserSession {
   uuid: string;
   username: string;
   displayName: string;
   avatarUrl?: string;
+  backgroundImage?: string;
   about?: string;
 }
 
@@ -32,7 +35,7 @@ interface ChatContextType {
   markAllNotificationsAsRead: () => void;
   clearAllNotifications: () => void;
   addNotification: (notif: Omit<AppNotification, 'id' | 'timestamp' | 'read'>) => void;
-  updateUserProfile: (updates: { displayName?: string; about?: string; avatarUrl?: string }) => Promise<void>;
+  updateUserProfile: (updates: { displayName?: string; about?: string; avatarUrl?: string; backgroundImage?: string }) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   deleteAccount: () => Promise<void>;
   revokeDevice: (targetDeviceId: string) => Promise<void>;
@@ -42,6 +45,9 @@ interface ChatContextType {
   toggleMuteConversation: (convId: string) => void;
   isConversationMuted: (convId: string) => boolean;
   searchStoredMessages: (keyword: string) => Promise<Array<{ message: DecryptedMessage; conversation: StoredConversation }>>;
+  searchKeyword: string;
+  setSearchKeyword: (keyword: string) => void;
+  toggleReaction: (clientMessageId: string, emoji: string, messageId?: string) => Promise<void>;
   markMessagesAsRead: (conversationId: string) => void;
   login: (username: string, password: string, customDeviceId?: string, deterministicSeed?: string) => Promise<void>;
   register: (username: string, email: string, password: string, displayName: string, customDeviceId?: string, deterministicSeed?: string) => Promise<void>;
@@ -49,13 +55,22 @@ interface ChatContextType {
   logout: () => void;
   selectConversation: (conv: StoredConversation) => Promise<void>;
   startConversationWithUser: (recipientUuid: string, recipientUsername: string, recipientDisplayName: string) => Promise<StoredConversation>;
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, attachment?: FileAttachment) => Promise<void>;
+  retryMessage: (clientMessageId: string) => Promise<boolean>;
+  retryAllFailedMessages: (conversationId?: string) => Promise<void>;
+  reconnect: () => Promise<void>;
   toggleSimulatedOffline: () => void;
   refreshConversations: () => Promise<void>;
   verifyConversationSafety: (convId: string, verified: boolean) => Promise<void>;
+  presenceMap: Record<string, { status: 'online' | 'away' | 'offline'; lastSeen?: number }>;
+  typingMap: Record<string, boolean>;
+  sendTyping: (conversationId: string, isTyping: boolean) => void;
+  getUserPresence: (userUuid: string) => { status: 'online' | 'away' | 'offline'; lastSeen?: number };
+  clearChatHistory: (conversationId: string) => Promise<void>;
+  setPresence: (status: 'online' | 'away' | 'offline') => void;
 }
 
-function playNotificationChime() {
+export function playNotificationChime() {
   try {
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioCtx) return;
@@ -90,38 +105,99 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [activeConversation, setActiveConversation] = useState<StoredConversation | null>(null);
   const [messages, setMessages] = useState<DecryptedMessage[]>([]);
   const [pendingQueueCount, setPendingQueueCount] = useState(0);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [presenceMap, setPresenceMap] = useState<
+    Record<string, { status: 'online' | 'away' | 'offline'; lastSeen?: number }>
+  >({});
+  const [typingMap, setTypingMap] = useState<Record<string, boolean>>({});
+  const typingTimeoutRef = useRef<Record<string, any>>({});
+
+  const { theme: themeFromProvider, setTheme } = useTheme();
 
   // Application Settings
   const [settings, setSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('ychat_settings');
-    return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    const base = saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
+    if (themeFromProvider) {
+      base.theme = themeFromProvider;
+    }
+    return base;
   });
 
   const updateSettings = useCallback((partial: Partial<AppSettings>) => {
+    if (partial.theme) {
+      setTheme(partial.theme);
+    }
     setSettings((prev) => {
       const updated = { ...prev, ...partial };
       localStorage.setItem('ychat_settings', JSON.stringify(updated));
       return updated;
     });
-  }, []);
 
-  // Sync theme mode, bubble color, and wallpaper to DOM
+    // Asynchronously persist to backend/Supabase database
+    if (token) {
+      userPreferencesService.saveUserPreferences(token, partial).catch(() => {});
+    }
+  }, [setTheme, token]);
+
+  // Keep settings.theme synchronized with ThemeProvider
+  useEffect(() => {
+    if (themeFromProvider && settings.theme !== themeFromProvider) {
+      setSettings((prev) => ({ ...prev, theme: themeFromProvider }));
+    }
+  }, [themeFromProvider, settings.theme]);
+
+  // Fetch user profile and preferences from database on initial load
+  useEffect(() => {
+    if (!token || !user?.uuid) return;
+    let isMounted = true;
+
+    userPreferencesService
+      .fetchUserProfileAndPreferences(token)
+      .then(({ profile, preferences }) => {
+        if (!isMounted) return;
+
+        // Apply updated user profile attributes
+        setUser((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            displayName: profile.displayName || prev.displayName,
+            avatarUrl: profile.avatarUrl !== undefined ? profile.avatarUrl : prev.avatarUrl,
+            backgroundImage: profile.backgroundImage !== undefined ? profile.backgroundImage : prev.backgroundImage,
+            about: profile.about !== undefined ? profile.about : prev.about
+          };
+        });
+
+        // Apply preferences to settings state
+        if (preferences) {
+          setSettings((prev) => ({
+            ...prev,
+            ...preferences
+          }));
+          if (preferences.theme) {
+            setTheme(preferences.theme);
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('Initial preferences fetch warning:', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [token, user?.uuid, setTheme]);
+
+  // Sync bubble color, wallpaper, and font-size to DOM (Theme is handled by ThemeProvider)
   useEffect(() => {
     const root = document.documentElement;
-    const isDark =
-      settings.theme === 'dark' ||
-      (settings.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-
-    if (isDark) {
-      root.classList.add('dark');
-      root.classList.remove('light');
-    } else {
-      root.classList.remove('dark');
-      root.classList.add('light');
-    }
     root.setAttribute('data-bubble-color', settings.bubbleColor);
     root.setAttribute('data-wallpaper', settings.chatWallpaper);
-  }, [settings.theme, settings.bubbleColor, settings.chatWallpaper]);
+    if (settings.fontSize) {
+      root.setAttribute('data-font-size', settings.fontSize);
+    }
+  }, [settings.bubbleColor, settings.chatWallpaper, settings.fontSize]);
 
   // Notifications State
   const [notifications, setNotifications] = useState<AppNotification[]>(() => {
@@ -368,11 +444,23 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     (conversationId: string) => {
       if (!settings.readReceiptsEnabled) return;
       clientDb.getMessagesForConversation(conversationId).then((msgs) => {
+        let changed = false;
         msgs.forEach((m) => {
           if (m.senderUserUuid !== user?.uuid && m.status !== 'read') {
             syncEngine.sendReceipt(m.id, m.clientMessageId, 'read');
+            clientDb.updateMessageStatus(m.clientMessageId, 'read');
+            changed = true;
           }
         });
+        if (changed) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.conversationId === conversationId && m.senderUserUuid !== user?.uuid && m.status !== 'read'
+                ? { ...m, status: 'read' }
+                : m
+            )
+          );
+        }
       });
     },
     [settings.readReceiptsEnabled, user?.uuid]
@@ -424,7 +512,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const serverConvs: Array<{
           id: string;
           conversationType: string;
-          members: Array<{ uuid: string; username: string; displayName: string }>;
+          members: Array<{ uuid: string; username: string; displayName: string; avatarUrl?: string }>;
           createdAt: string;
         }> = data.conversations || [];
 
@@ -443,6 +531,7 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             recipientUuid: recipient.uuid,
             recipientUsername: recipient.username,
             recipientDisplayName: recipient.displayName,
+            recipientAvatarUrl: recipient.avatarUrl || local?.recipientAvatarUrl,
             lastMessageText: local?.lastMessageText,
             lastMessageTimestamp: local?.lastMessageTimestamp,
             unreadCount: local?.unreadCount || 0,
@@ -518,14 +607,122 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // SyncEngine receipt listener
   useEffect(() => {
-    const unsubscribe = syncEngine.onReceipt((clientMsgId, status) => {
+    const unsubscribe = syncEngine.onReceipt((clientMsgId, status, failureCategory, reason) => {
       setMessages((prev) =>
-        prev.map((m) => (m.clientMessageId === clientMsgId ? { ...m, status } : m))
+        prev.map((m) => {
+          if (m.clientMessageId === clientMsgId) {
+            return {
+              ...m,
+              status,
+              failureReason: failureCategory as any,
+              errorMessage: reason || (status === 'failed' ? "Message couldn't be delivered" : m.errorMessage)
+            };
+          }
+          return m;
+        })
       );
       updateQueueCount();
     });
     return unsubscribe;
   }, [updateQueueCount]);
+
+  // SyncEngine reaction listener
+  useEffect(() => {
+    const unsubscribe = syncEngine.onReaction((data) => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.clientMessageId === data.clientMessageId) {
+            const reactions = { ...(m.reactions || {}) };
+            const users = new Set(reactions[data.emoji] || []);
+            if (users.has(data.userUuid)) {
+              users.delete(data.userUuid);
+            } else {
+              users.add(data.userUuid);
+            }
+            if (users.size === 0) {
+              delete reactions[data.emoji];
+            } else {
+              reactions[data.emoji] = Array.from(users);
+            }
+            return { ...m, reactions };
+          }
+          return m;
+        })
+      );
+    });
+    return unsubscribe;
+  }, []);
+
+  // SyncEngine presence listener (real-time connection status & lastSeen from server)
+  useEffect(() => {
+    const unsubscribe = syncEngine.onPresence((userUuid, status, lastSeen) => {
+      setPresenceMap((prev) => ({
+        ...prev,
+        [userUuid]: { status, lastSeen }
+      }));
+    });
+    return unsubscribe;
+  }, []);
+
+  // Batch-sync presence states for all conversation partners whenever conversations update
+  useEffect(() => {
+    if (!token || conversations.length === 0) return;
+    const partnerUuids = Array.from(
+      new Set(conversations.map((c) => c.recipientUuid).filter(Boolean))
+    );
+    if (partnerUuids.length === 0) return;
+
+    fetch('/api/v1/users/presence/batch', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body: JSON.stringify({ userUuids: partnerUuids })
+    })
+      .then((res) => {
+        if (!res.ok) return null;
+        return res.json();
+      })
+      .then((data) => {
+        if (data && Array.isArray(data.presences)) {
+          setPresenceMap((prev) => {
+            const next = { ...prev };
+            data.presences.forEach((p: any) => {
+              next[p.userUuid] = { status: p.status, lastSeen: p.lastSeen };
+            });
+            return next;
+          });
+        }
+      })
+      .catch(() => {});
+  }, [conversations, token]);
+
+  // SyncEngine typing listener (isolated per conversation)
+  useEffect(() => {
+    const unsubscribe = syncEngine.onTyping((data) => {
+      if (data.userUuid === user?.uuid) return;
+
+      setTypingMap((prev) => ({
+        ...prev,
+        [data.conversationId]: data.isTyping
+      }));
+
+      // Auto-clear typing indicator after 3.5 seconds if no stop event was received
+      if (data.isTyping) {
+        if (typingTimeoutRef.current[data.conversationId]) {
+          clearTimeout(typingTimeoutRef.current[data.conversationId]);
+        }
+        typingTimeoutRef.current[data.conversationId] = setTimeout(() => {
+          setTypingMap((prev) => ({
+            ...prev,
+            [data.conversationId]: false
+          }));
+        }, 3500);
+      }
+    });
+    return unsubscribe;
+  }, [user?.uuid]);
 
   // Initialize active session on mount if credentials exist
   useEffect(() => {
@@ -740,9 +937,45 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.error('Forbidden: Cannot access conversation of another user');
       return;
     }
+    setSearchKeyword('');
     setActiveConversation(conv);
     syncEngine.setActiveConversation(conv.id);
   };
+
+  const toggleReaction = useCallback(
+    async (clientMessageId: string, emoji: string, messageId?: string) => {
+      if (!user || !activeConversation) return;
+
+      // Optimistically update local message state
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.clientMessageId === clientMessageId) {
+            const reactions = { ...(m.reactions || {}) };
+            const users = new Set(reactions[emoji] || []);
+            if (users.has(user.uuid)) {
+              users.delete(user.uuid);
+            } else {
+              users.add(user.uuid);
+            }
+            if (users.size === 0) {
+              delete reactions[emoji];
+            } else {
+              reactions[emoji] = Array.from(users);
+            }
+            return { ...m, reactions };
+          }
+          return m;
+        })
+      );
+
+      // Persist in client IndexedDB
+      await clientDb.updateMessageReactions(clientMessageId, emoji, user.uuid);
+
+      // Emit to peer via WebSocket/REST
+      syncEngine.sendReaction(activeConversation.id, clientMessageId, emoji, messageId);
+    },
+    [user, activeConversation]
+  );
 
   const startConversationWithUser = async (
     recipientUuid: string,
@@ -792,10 +1025,11 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return newConv;
   };
 
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (text: string, attachment?: FileAttachment) => {
     if (!activeConversation || !token || !deviceKeys || !user) {
       throw new Error('No active conversation or session');
     }
+    if (!text.trim() && !attachment) return;
 
     // 1. Resolve recipient UUID if missing
     let recipientUuid = activeConversation.recipientUuid;
@@ -854,23 +1088,49 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       recipientBundle,
       text,
       recipientUuid,
-      true
+      true,
+      attachment,
+      settings.offlineRetentionMinutes
     );
 
     // 4. Update UI state immediately
     setMessages((prev) => [...prev, sentMsg!]);
 
     // 5. Update conversation last message metadata
+    const summaryText = text || (attachment ? `📎 ${attachment.fileName}` : '');
     const updatedConv: StoredConversation = {
       ...activeConversation,
       ownerUserId: user.uuid,
-      lastMessageText: text,
+      lastMessageText: summaryText,
       lastMessageTimestamp: Date.now()
     };
     await clientDb.saveConversation(updatedConv);
     setActiveConversation(updatedConv);
     await refreshConversations();
     await updateQueueCount();
+  };
+
+  const retryMessage = async (clientMessageId: string): Promise<boolean> => {
+    const success = await syncEngine.retryMessage(clientMessageId);
+    if (activeConversation) {
+      const refreshed = await clientDb.getMessages(activeConversation.id);
+      setMessages(refreshed);
+    }
+    await updateQueueCount();
+    return success;
+  };
+
+  const retryAllFailedMessages = async (conversationId?: string): Promise<void> => {
+    await syncEngine.retryAllFailedMessages(conversationId || activeConversation?.id);
+    if (activeConversation) {
+      const refreshed = await clientDb.getMessages(activeConversation.id);
+      setMessages(refreshed);
+    }
+    await updateQueueCount();
+  };
+
+  const reconnect = async (): Promise<void> => {
+    await syncEngine.reconnect();
   };
 
   const toggleSimulatedOffline = () => {
@@ -902,26 +1162,22 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const updateUserProfile = async (updates: { displayName?: string; about?: string; avatarUrl?: string }) => {
+  const updateUserProfile = async (updates: { displayName?: string; about?: string; avatarUrl?: string; backgroundImage?: string }) => {
     if (!token || !user) throw new Error('Not logged in');
-    const res = await fetch('/api/v1/users/profile', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to update profile');
-    }
-    const data = await res.json();
-    const updatedUser: UserSession = {
+    const updatedUser = await userPreferencesService.saveUserProfile(token, updates);
+    const nextUser: UserSession = {
       ...user,
-      displayName: data.user.displayName,
-      about: data.user.about,
-      avatarUrl: data.user.avatarUrl
+      displayName: updatedUser.displayName,
+      about: updatedUser.about,
+      avatarUrl: updatedUser.avatarUrl,
+      backgroundImage: updatedUser.backgroundImage
     };
-    setUser(updatedUser);
-    localStorage.setItem('ychat_user', JSON.stringify(updatedUser));
+    setUser(nextUser);
+    localStorage.setItem('ychat_user', JSON.stringify(nextUser));
+
+    if (updates.backgroundImage) {
+      updateSettings({ chatWallpaper: 'custom', customWallpaperUrl: updates.backgroundImage });
+    }
   };
 
   const changePassword = async (curr: string, next: string) => {
@@ -965,6 +1221,38 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
+  const sendTyping = useCallback((conversationId: string, isTyping: boolean) => {
+    syncEngine.sendTyping(conversationId, isTyping);
+  }, []);
+
+  const setPresence = useCallback((status: 'online' | 'away' | 'offline') => {
+    syncEngine.sendPresence(status);
+  }, []);
+
+  const getUserPresence = useCallback(
+    (userUuid: string) => {
+      return presenceMap[userUuid] || { status: 'offline' };
+    },
+    [presenceMap]
+  );
+
+  const clearChatHistory = useCallback(
+    async (conversationId: string) => {
+      await clientDb.clearMessagesForConversation(conversationId);
+      if (activeConversation?.id === conversationId) {
+        setMessages([]);
+      }
+      const conv = await clientDb.getConversation(conversationId);
+      if (conv) {
+        conv.lastMessageText = undefined;
+        conv.unreadCount = 0;
+        await clientDb.saveConversation(conv);
+        refreshConversations();
+      }
+    },
+    [activeConversation?.id, refreshConversations]
+  );
+
   return (
     <ChatContext.Provider
       value={{
@@ -996,6 +1284,9 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         toggleMuteConversation,
         isConversationMuted,
         searchStoredMessages,
+        searchKeyword,
+        setSearchKeyword,
+        toggleReaction,
         markMessagesAsRead,
         login,
         register,
@@ -1004,9 +1295,18 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         selectConversation,
         startConversationWithUser,
         sendMessage,
+        retryMessage,
+        retryAllFailedMessages,
+        reconnect,
         toggleSimulatedOffline,
         refreshConversations,
-        verifyConversationSafety
+        verifyConversationSafety,
+        presenceMap,
+        typingMap,
+        sendTyping,
+        getUserPresence,
+        clearChatHistory,
+        setPresence
       }}
     >
       {children}

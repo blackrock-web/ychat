@@ -15,6 +15,7 @@ export interface StoredConversation {
   recipientUuid: string;
   recipientUsername: string;
   recipientDisplayName: string;
+  recipientAvatarUrl?: string;
   lastMessageText?: string;
   lastMessageTimestamp?: number;
   unreadCount: number;
@@ -29,6 +30,8 @@ export interface QueuedMessage {
   plaintext: string;
   timestamp: number;
   retries: number;
+  lastAttempt?: number;
+  failureReason?: string;
 }
 
 class ClientStorage {
@@ -679,10 +682,22 @@ class ClientStorage {
       .sort(sortFn);
   }
 
-  async updateMessageStatus(clientMessageId: string, status: DecryptedMessage['status']): Promise<void> {
+  async getFailedMessages(convId?: string): Promise<DecryptedMessage[]> {
+    const all = Array.from(this.memoryStore.messages.values());
+    return all.filter(m => m.status === 'failed' && (!convId || m.conversationId === convId));
+  }
+
+  async updateMessageStatus(
+    clientMessageId: string,
+    status: DecryptedMessage['status'],
+    meta?: { failureReason?: string; errorMessage?: string; retryCount?: number }
+  ): Promise<void> {
     const mem = this.memoryStore.messages.get(clientMessageId);
     if (mem) {
       mem.status = status;
+      if (meta?.failureReason) mem.failureReason = meta.failureReason as any;
+      if (meta?.errorMessage) mem.errorMessage = meta.errorMessage;
+      if (meta?.retryCount !== undefined) mem.retryCount = meta.retryCount;
     }
 
     await this.runTransaction('messages', 'readwrite', (store) => {
@@ -695,6 +710,9 @@ class ClientStorage {
               try {
                 const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(record);
                 dec.status = status;
+                if (meta?.failureReason) dec.failureReason = meta.failureReason as any;
+                if (meta?.errorMessage) dec.errorMessage = meta.errorMessage;
+                if (meta?.retryCount !== undefined) dec.retryCount = meta.retryCount;
                 const encrypted = await this.atRestDriver.encryptPayload(dec);
                 record = {
                   clientMessageId: dec.clientMessageId,
@@ -707,12 +725,130 @@ class ClientStorage {
               } catch {}
             } else {
               record.status = status;
+              if (meta?.failureReason) record.failureReason = meta.failureReason;
+              if (meta?.errorMessage) record.errorMessage = meta.errorMessage;
+              if (meta?.retryCount !== undefined) record.retryCount = meta.retryCount;
             }
             store.put(record);
           }
           resolve();
         };
         req.onerror = () => resolve();
+      });
+    });
+  }
+
+  async updateMessageReactions(clientMessageId: string, emoji: string, userUuid: string): Promise<DecryptedMessage | null> {
+    const mem = this.memoryStore.messages.get(clientMessageId);
+    let updatedMessage: DecryptedMessage | null = null;
+    if (mem) {
+      const reactions = { ...(mem.reactions || {}) };
+      const users = new Set(reactions[emoji] || []);
+      if (users.has(userUuid)) {
+        users.delete(userUuid);
+      } else {
+        users.add(userUuid);
+      }
+      if (users.size === 0) {
+        delete reactions[emoji];
+      } else {
+        reactions[emoji] = Array.from(users);
+      }
+      mem.reactions = reactions;
+      updatedMessage = mem;
+    }
+
+    await this.runTransaction('messages', 'readwrite', (store) => {
+      return new Promise<void>((resolve) => {
+        const req = store.get(clientMessageId);
+        req.onsuccess = async () => {
+          if (req.result) {
+            let record = req.result;
+            if (isEncryptedAtRest(record) && this.atRestDriver?.isUnlocked()) {
+              try {
+                const dec = await this.atRestDriver.decryptPayload<DecryptedMessage>(record);
+                const reactions = { ...(dec.reactions || {}) };
+                const users = new Set(reactions[emoji] || []);
+                if (users.has(userUuid)) {
+                  users.delete(userUuid);
+                } else {
+                  users.add(userUuid);
+                }
+                if (users.size === 0) {
+                  delete reactions[emoji];
+                } else {
+                  reactions[emoji] = Array.from(users);
+                }
+                dec.reactions = reactions;
+                const encrypted = await this.atRestDriver.encryptPayload(dec);
+                record = {
+                  clientMessageId: dec.clientMessageId,
+                  conversationId: dec.conversationId,
+                  timestamp: dec.timestamp,
+                  serverSequence: dec.serverSequence,
+                  status: dec.status,
+                  ...encrypted
+                };
+                if (!updatedMessage) updatedMessage = dec;
+              } catch {}
+            } else {
+              const reactions = { ...(record.reactions || {}) };
+              const users = new Set(reactions[emoji] || []);
+              if (users.has(userUuid)) {
+                users.delete(userUuid);
+              } else {
+                users.add(userUuid);
+              }
+              if (users.size === 0) {
+                delete reactions[emoji];
+              } else {
+                reactions[emoji] = Array.from(users);
+              }
+              record.reactions = reactions;
+              if (!updatedMessage) updatedMessage = record;
+            }
+            store.put(record);
+          }
+          resolve();
+        };
+        req.onerror = () => resolve();
+      });
+    });
+
+    return updatedMessage;
+  }
+
+  async deleteMessage(clientMessageId: string): Promise<void> {
+    this.memoryStore.messages.delete(clientMessageId);
+    await this.runTransaction('messages', 'readwrite', (store) => {
+      return new Promise<void>((resolve) => {
+        const req = store.delete(clientMessageId);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+      });
+    });
+  }
+
+  async clearMessagesForConversation(convId: string): Promise<void> {
+    for (const [id, msg] of this.memoryStore.messages.entries()) {
+      if (msg.conversationId === convId) {
+        this.memoryStore.messages.delete(id);
+      }
+    }
+    await this.runTransaction('messages', 'readwrite', (store) => {
+      return new Promise<void>((resolve) => {
+        try {
+          const index = store.index('conversationId');
+          const req = index.getAllKeys(convId);
+          req.onsuccess = () => {
+            const keys = req.result || [];
+            keys.forEach((k) => store.delete(k));
+            resolve();
+          };
+          req.onerror = () => resolve();
+        } catch {
+          resolve();
+        }
       });
     });
   }

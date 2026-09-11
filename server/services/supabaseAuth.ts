@@ -287,3 +287,37 @@ class IsolatedSupabaseAuthService {
 }
 
 export const supabaseAuth = new IsolatedSupabaseAuthService();
+
+export async function syncUserProfileToSupabase(user: {
+  id: string;
+  authUserId?: string;
+  username: string;
+  displayName: string;
+  avatarUrl?: string;
+  backgroundImage?: string;
+  about?: string;
+  preferences?: Record<string, any>;
+}): Promise<void> {
+  if (!externalSupabase) return;
+  try {
+    const { error } = await externalSupabase.from('user_profiles').upsert(
+      {
+        id: user.id,
+        auth_user_id: user.authUserId || user.id,
+        username: user.username,
+        display_name: user.displayName,
+        avatar_url: user.avatarUrl || null,
+        background_image: user.backgroundImage || null,
+        about: user.about || null,
+        preferences: user.preferences || {},
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'id' }
+    );
+    if (error) {
+      console.warn('[Supabase DB] user_profiles upsert note:', error.message);
+    }
+  } catch (err: any) {
+    console.warn('[Supabase DB] Failed to sync user profile to external Supabase:', err?.message || err);
+  }
+}

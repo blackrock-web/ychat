@@ -4,6 +4,7 @@ import {
   EncryptedEnvelope,
   DecryptedMessage,
   DeliveryStatus,
+  FileAttachment,
   PrekeyBundle,
   HandshakePacket,
   EncryptedChunk
@@ -39,13 +40,16 @@ export class SyncEngine {
   private connectionState: ConnectionState = 'offline';
   private connectionListeners: Array<(state: ConnectionState) => void> = [];
   private messageListeners: Array<(msg: DecryptedMessage) => void> = [];
-  private receiptListeners: Array<(clientMsgId: string, status: DeliveryStatus) => void> = [];
-  private presenceListeners: Array<(userUuid: string, status: 'online' | 'offline') => void> = [];
+  private receiptListeners: Array<(clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string) => void> = [];
+  private presenceListeners: Array<(userUuid: string, status: 'online' | 'away' | 'offline', lastSeen?: number) => void> = [];
+  private typingListeners: Array<(data: { conversationId: string; userUuid: string; isTyping: boolean }) => void> = [];
   private notificationListeners: Array<(notif: any) => void> = [];
+  private reactionListeners: Array<(data: { conversationId: string; clientMessageId: string; emoji: string; userUuid: string }) => void> = [];
   private token: string | null = null;
   private deviceKeys: DeviceKeyBundle | null = null;
   private userUuid: string | null = null;
   private reconnectTimer: any = null;
+  private pingTimer: any = null;
   private isProcessingQueue = false;
   private chunkReassembler = new ChunkReassembler();
   private activeConversationId: string | null = null;
@@ -73,6 +77,8 @@ export class SyncEngine {
     this.userUuid = null;
     this.activeConversationId = null;
     this.droppedEnvelopes.clear();
+    clearInterval(this.pingTimer);
+    this.pingTimer = null;
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -102,17 +108,24 @@ export class SyncEngine {
     };
   }
 
-  onReceipt(cb: (clientMsgId: string, status: DeliveryStatus) => void) {
+  onReceipt(cb: (clientMsgId: string, status: DeliveryStatus, failureCategory?: string, reason?: string) => void) {
     this.receiptListeners.push(cb);
     return () => {
       this.receiptListeners = this.receiptListeners.filter(l => l !== cb);
     };
   }
 
-  onPresence(cb: (userUuid: string, status: 'online' | 'offline') => void) {
+  onPresence(cb: (userUuid: string, status: 'online' | 'away' | 'offline', lastSeen?: number) => void) {
     this.presenceListeners.push(cb);
     return () => {
       this.presenceListeners = this.presenceListeners.filter(l => l !== cb);
+    };
+  }
+
+  onTyping(cb: (data: { conversationId: string; userUuid: string; isTyping: boolean }) => void) {
+    this.typingListeners.push(cb);
+    return () => {
+      this.typingListeners = this.typingListeners.filter(l => l !== cb);
     };
   }
 
@@ -120,6 +133,13 @@ export class SyncEngine {
     this.notificationListeners.push(cb);
     return () => {
       this.notificationListeners = this.notificationListeners.filter(l => l !== cb);
+    };
+  }
+
+  onReaction(cb: (data: { conversationId: string; clientMessageId: string; emoji: string; userUuid: string }) => void) {
+    this.reactionListeners.push(cb);
+    return () => {
+      this.reactionListeners = this.reactionListeners.filter(l => l !== cb);
     };
   }
 
@@ -178,19 +198,52 @@ export class SyncEngine {
         if (this.activeConversationId) {
           this.syncConversationMessages(this.activeConversationId);
         }
+
+        // Keepalive heartbeat ping every 25s to keep WebSocket connection active
+        clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'ping' }));
+          }
+        }, 25000);
       };
 
       this.ws.onmessage = async (event) => {
         try {
           const data = JSON.parse(event.data);
+          if (data.type === 'pong') {
+            return; // Heartbeat response acknowledged
+          }
           if (data.type === 'message') {
             await this.handleIncomingEnvelope(data.envelope, data.messageId, data.serverSequence);
           } else if (data.type === 'receipt') {
-            await this.handleReceipt(data.clientMessageId, data.status);
+            await this.handleReceipt(data.clientMessageId, data.status, data.failureCategory, data.reason);
           } else if (data.type === 'presence') {
-            this.presenceListeners.forEach(cb => cb(data.userUuid, data.status));
+            this.presenceListeners.forEach(cb => cb(data.userUuid, data.status, data.lastSeen));
+          } else if (data.type === 'presence_batch') {
+            if (Array.isArray(data.presences)) {
+              data.presences.forEach((p: any) => {
+                this.presenceListeners.forEach(cb => cb(p.userUuid, p.status, p.lastSeen));
+              });
+            }
+          } else if (data.type === 'typing') {
+            this.typingListeners.forEach(cb =>
+              cb({
+                conversationId: data.conversationId,
+                userUuid: data.userUuid,
+                isTyping: !!data.isTyping
+              })
+            );
           } else if (data.type === 'notification') {
             this.notificationListeners.forEach(cb => cb(data.notification));
+          } else if (data.type === 'reaction') {
+            await clientDb.updateMessageReactions(data.clientMessageId, data.emoji, data.userUuid);
+            this.reactionListeners.forEach(cb => cb({
+              conversationId: data.conversationId,
+              clientMessageId: data.clientMessageId,
+              emoji: data.emoji,
+              userUuid: data.userUuid
+            }));
           }
         } catch (err) {
           console.error('[SyncEngine] WS message parse error:', err);
@@ -198,6 +251,8 @@ export class SyncEngine {
       };
 
       this.ws.onclose = () => {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
         if (this.connectionState !== 'offline') {
           this.setConnectionState('reconnecting');
           clearTimeout(this.reconnectTimer);
@@ -206,6 +261,8 @@ export class SyncEngine {
       };
 
       this.ws.onerror = () => {
+        clearInterval(this.pingTimer);
+        this.pingTimer = null;
         this.ws?.close();
       };
     } catch {
@@ -221,7 +278,9 @@ export class SyncEngine {
     recipientBundle: PrekeyBundle,
     text: string,
     recipientUserId?: string,
-    allowOfflineStorage: boolean = true
+    allowOfflineStorage: boolean = true,
+    attachment?: FileAttachment,
+    retentionMinutes: number = 1440
   ): Promise<DecryptedMessage> {
     if (!this.deviceKeys || !this.userUuid) {
       throw new Error('Not authenticated');
@@ -263,10 +322,22 @@ export class SyncEngine {
     updatedSession.handshakePacket = session.handshakePacket;
     await clientDb.saveSession(updatedSession);
 
-    // 3. Encrypt payload and sign with ML-DSA-87 (15 minute default TTL)
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    // 3. Encrypt payload and sign with ML-DSA-87 with sender-configured retention (default 24h = 1440m, max 7d = 10080m)
+    const retentionMs = Math.min(Math.max(retentionMinutes, 5), 10080) * 60 * 1000;
+    const expiresAt = new Date(Date.now() + retentionMs).toISOString();
+    const payloadToEncrypt = attachment
+      ? JSON.stringify({
+          type: 'file_attachment',
+          fileName: attachment.fileName,
+          fileSize: attachment.fileSize,
+          mimeType: attachment.mimeType,
+          dataUrl: attachment.dataUrl,
+          text: text || ''
+        })
+      : text;
+
     const envelope = createMessageEnvelope(
-      text,
+      payloadToEncrypt,
       clientMessageId,
       conversationId,
       this.deviceKeys.deviceId,
@@ -282,6 +353,7 @@ export class SyncEngine {
     envelope.senderUserId = this.userUuid;
     envelope.recipientUserId = recipientUserId || recipientBundle.userUuid;
     envelope.allowOfflineStorage = allowOfflineStorage;
+    (envelope as any).retentionMinutes = retentionMinutes;
 
     const initialStatus: DeliveryStatus =
       this.connectionState === 'connected' ? 'sending' : 'queued_offline';
@@ -307,12 +379,13 @@ export class SyncEngine {
       conversationId,
       senderDeviceId: this.deviceKeys.deviceId,
       senderUserUuid: this.userUuid,
-      text,
+      text: text || (attachment ? attachment.fileName : ''),
       timestamp: Date.now(),
       sequence,
       status: initialStatus,
       tamperVerified: true,
-      expiresAt
+      expiresAt,
+      attachment
     };
 
     // 4. Save to local IndexedDB
@@ -350,7 +423,7 @@ export class SyncEngine {
           conversationId,
           recipientDeviceId,
           envelope: chunkEnvelopeObj,
-          plaintext: text,
+          plaintext: text || (attachment ? attachment.fileName : ''),
           timestamp: Date.now(),
           retries: 0
         });
@@ -361,7 +434,7 @@ export class SyncEngine {
         conversationId,
         recipientDeviceId,
         envelope,
-        plaintext: text,
+        plaintext: text || (attachment ? attachment.fileName : ''),
         timestamp: Date.now(),
         retries: 0
       });
@@ -378,9 +451,22 @@ export class SyncEngine {
     this.isProcessingQueue = true;
 
     try {
+      const isOffline = (typeof navigator !== 'undefined' && !navigator.onLine) || this.connectionState === 'offline';
       const queue = await clientDb.getSyncQueue();
+
       for (const item of queue) {
+        const rootMessageId = item.clientMessageId.split('#chunk')[0];
+
+        // If client is currently offline, ensure message is marked as queued_offline
+        if (isOffline) {
+          await clientDb.updateMessageStatus(rootMessageId, 'queued_offline');
+          this.receiptListeners.forEach(cb => cb(rootMessageId, 'queued_offline'));
+          continue;
+        }
+
         let sent = false;
+        let responseStatus: DeliveryStatus = 'sent';
+        let failureError: { category: string; message: string } | null = null;
 
         // Try WebSocket first
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -415,6 +501,10 @@ export class SyncEngine {
             });
             if (res.ok) {
               sent = true;
+              const resData = await res.json().catch(() => ({}));
+              if (resData.status === 'stored_offline') {
+                responseStatus = 'sent'; // Successfully queued on server for offline recipient
+              }
               syncDiagnostic.record('SENDER_DISPATCH', {
                 clientMessageId: item.clientMessageId,
                 conversationId: item.conversationId,
@@ -423,25 +513,62 @@ export class SyncEngine {
                 sequence: item.envelope.sequence,
                 transport: 'rest'
               });
+            } else {
+              sent = false;
+              if (res.status === 401 || res.status === 403) {
+                failureError = { category: 'AUTHENTICATION_EXPIRED', message: 'Authentication expired' };
+              } else if (res.status === 429) {
+                failureError = { category: 'RATE_LIMITED', message: 'Rate limit reached' };
+              } else if (res.status >= 500) {
+                failureError = { category: 'SERVER_ERROR', message: "Message couldn't be delivered" };
+              } else {
+                failureError = { category: 'NETWORK_ERROR', message: "Message couldn't be delivered" };
+              }
             }
           } catch {
             sent = false;
+            failureError = { category: 'CONNECTION_LOST', message: "Message couldn't be delivered" };
           }
         }
 
         if (sent) {
           await clientDb.dequeueMessage(item.clientMessageId);
-          const rootMessageId = item.clientMessageId.split('#chunk')[0];
-          await clientDb.updateMessageStatus(rootMessageId, 'sent');
-          this.receiptListeners.forEach(cb => cb(rootMessageId, 'sent'));
+          await clientDb.updateMessageStatus(rootMessageId, responseStatus);
+          this.receiptListeners.forEach(cb => cb(rootMessageId, responseStatus));
 
           syncDiagnostic.record('SENDER_ACKNOWLEDGED', {
             clientMessageId: rootMessageId,
             conversationId: item.conversationId,
             senderDeviceId: item.envelope.senderDeviceId,
             recipientDeviceId: item.envelope.recipientDeviceId,
-            details: { status: 'sent' }
+            details: { status: responseStatus }
           });
+        } else {
+          // Increment retry attempt
+          item.retries = (item.retries || 0) + 1;
+          const MAX_RETRIES = 3;
+
+          if (item.retries >= MAX_RETRIES || failureError?.category === 'AUTHENTICATION_EXPIRED') {
+            // Reached maximum retries -> Delivery failure
+            await clientDb.dequeueMessage(item.clientMessageId);
+            await clientDb.updateMessageStatus(rootMessageId, 'failed', {
+              failureReason: (failureError?.category as any) || 'NETWORK_ERROR',
+              errorMessage: failureError?.message || "Message couldn't be delivered",
+              retryCount: item.retries
+            });
+            this.receiptListeners.forEach(cb => cb(rootMessageId, 'failed', failureError?.category, failureError?.message));
+          } else {
+            // Keep in queue and mark status as retrying
+            await clientDb.enqueueMessage(item);
+            await clientDb.updateMessageStatus(rootMessageId, 'retrying', {
+              retryCount: item.retries
+            });
+            this.receiptListeners.forEach(cb => cb(rootMessageId, 'retrying'));
+
+            // Exponential backoff
+            const backoffMs = Math.min(1000 * Math.pow(2, item.retries), 10000);
+            setTimeout(() => this.processSyncQueue(), backoffMs);
+          }
         }
       }
     } finally {
@@ -600,6 +727,24 @@ export class SyncEngine {
       // 5. Verify ML-DSA-87 signature & Decrypt ChaCha20-Poly1305
       const plaintext = verifyAndDecryptEnvelope(targetEnvelope, messageKey, senderBundle.publicKeys);
 
+      let messageText = plaintext;
+      let fileAttachment: FileAttachment | undefined = undefined;
+
+      try {
+        if (plaintext.startsWith('{"type":"file_attachment"')) {
+          const parsed = JSON.parse(plaintext);
+          if (parsed.type === 'file_attachment') {
+            fileAttachment = {
+              fileName: parsed.fileName,
+              fileSize: parsed.fileSize,
+              mimeType: parsed.mimeType,
+              dataUrl: parsed.dataUrl
+            };
+            messageText = parsed.text || parsed.fileName;
+          }
+        }
+      } catch {}
+
       syncDiagnostic.record('RECIPIENT_DECRYPTED_VERIFIED', {
         clientMessageId: targetEnvelope.clientMessageId,
         conversationId: targetEnvelope.conversationId,
@@ -609,7 +754,8 @@ export class SyncEngine {
         serverSequence: serverSeq,
         details: {
           tamperVerified: true,
-          encryptionVersion: targetEnvelope.encryptionVersion
+          encryptionVersion: targetEnvelope.encryptionVersion,
+          hasAttachment: !!fileAttachment
         }
       });
 
@@ -619,13 +765,14 @@ export class SyncEngine {
         conversationId: targetEnvelope.conversationId,
         senderDeviceId: targetEnvelope.senderDeviceId,
         senderUserUuid: senderBundle.userUuid,
-        text: plaintext,
+        text: messageText,
         timestamp: targetEnvelope.expiresAt ? (new Date(targetEnvelope.expiresAt).getTime() - 15 * 60 * 1000) : Date.now(),
         sequence: targetEnvelope.sequence || 1,
         serverSequence: serverSeq || targetEnvelope.serverSequence,
         status: 'delivered',
         tamperVerified: true,
-        expiresAt: targetEnvelope.expiresAt
+        expiresAt: targetEnvelope.expiresAt,
+        attachment: fileAttachment
       };
 
       // 6. Save locally
@@ -640,7 +787,7 @@ export class SyncEngine {
       // 8. Update conversation metadata
       let conv = await clientDb.getConversation(targetEnvelope.conversationId);
       if (conv) {
-        conv.lastMessageText = plaintext;
+        conv.lastMessageText = messageText;
         conv.lastMessageTimestamp = Date.now();
         conv.unreadCount = (conv.unreadCount || 0) + 1;
         await clientDb.saveConversation(conv);
@@ -713,9 +860,16 @@ export class SyncEngine {
             dropped: true
           }
         });
-        console.warn(`[SyncEngine] Dropped unverified envelope (${envelope.clientMessageId}): ${errMsg}`);
-        if (serverMessageId) {
-          this.sendReceipt(serverMessageId, envelope.clientMessageId, 'delivered');
+        console.warn(`[SyncEngine] Security verification failed (${envelope.clientMessageId}): ${errMsg}`);
+        // Notify sender of delivery failure without exposing cryptographic internals
+        if (serverMessageId || envelope.clientMessageId) {
+          this.sendReceipt(
+            serverMessageId || envelope.clientMessageId,
+            envelope.clientMessageId,
+            'failed',
+            'VERIFICATION_FAILED',
+            "Message couldn't be delivered"
+          );
         }
       } else {
         console.error('[SyncEngine] Failed to ingest message envelope:', err);
@@ -723,10 +877,18 @@ export class SyncEngine {
     }
   }
 
-  private async handleReceipt(clientMessageId: string, status: DeliveryStatus) {
+  private async handleReceipt(
+    clientMessageId: string,
+    status: DeliveryStatus,
+    failureCategory?: string,
+    reason?: string
+  ) {
     const rootId = clientMessageId.split('#chunk')[0];
-    await clientDb.updateMessageStatus(rootId, status);
-    this.receiptListeners.forEach(cb => cb(rootId, status));
+    await clientDb.updateMessageStatus(rootId, status, {
+      failureReason: failureCategory as any,
+      errorMessage: reason || (status === 'failed' ? "Message couldn't be delivered" : undefined)
+    });
+    this.receiptListeners.forEach(cb => cb(rootId, status, failureCategory, reason));
 
     if (status === 'delivered') {
       syncDiagnostic.record('DELIVERY_CONFIRMED', {
@@ -734,17 +896,31 @@ export class SyncEngine {
         conversationId: 'active',
         details: { status: 'delivered' }
       });
+    } else if (status === 'failed') {
+      syncDiagnostic.record('DELIVERY_FAILED', {
+        clientMessageId: rootId,
+        conversationId: 'active',
+        details: { status: 'failed', failureCategory, reason }
+      });
     }
   }
 
-  sendReceipt(serverMessageId: string, clientMessageId: string, status: 'delivered' | 'read') {
+  sendReceipt(
+    serverMessageId: string,
+    clientMessageId: string,
+    status: 'delivered' | 'read' | 'failed' | 'expired',
+    failureCategory?: string,
+    reason?: string
+  ) {
     const rootId = clientMessageId.split('#chunk')[0];
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({
         type: 'receipt',
         messageId: serverMessageId,
         clientMessageId: rootId,
-        status
+        status,
+        failureCategory,
+        reason
       }));
     } else if (this.token) {
       this.authFetch(`/api/v1/messages/${serverMessageId}/receipt`, {
@@ -752,8 +928,198 @@ export class SyncEngine {
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ clientMessageId: rootId, status })
+        body: JSON.stringify({
+          clientMessageId: rootId,
+          status,
+          failureCategory,
+          reason
+        })
       }).catch(() => {});
+    }
+  }
+
+  async retryMessage(clientMessageId: string): Promise<boolean> {
+    const rootId = clientMessageId.split('#chunk')[0];
+    const msg = await clientDb.getMessageById(rootId);
+    if (!msg) return false;
+
+    // 1. Immediately mark status as retrying
+    await clientDb.updateMessageStatus(rootId, 'retrying', {
+      retryCount: (msg.retryCount || 0) + 1,
+      lastAttempt: Date.now()
+    });
+    this.receiptListeners.forEach(cb => cb(rootId, 'retrying'));
+
+    // 2. If failure was cryptographic verification, invalidate ratchet session to force fresh handshake
+    if (msg.failureReason === 'VERIFICATION_FAILED' && msg.recipientDeviceId) {
+      await clientDb.deleteSession(`${msg.conversationId}:${msg.recipientDeviceId}`);
+    }
+
+    // 3. Check queue
+    const queue = await clientDb.getSyncQueue();
+    const existing = queue.find(q => q.clientMessageId === rootId || q.clientMessageId.startsWith(`${rootId}#chunk`));
+
+    if (existing) {
+      existing.retries = 0;
+      await clientDb.enqueueMessage(existing);
+    } else {
+      try {
+        const conv = await clientDb.getConversation(msg.conversationId);
+        const recipientUserId = conv?.participants.find(p => p !== this.userUuid);
+        if (recipientUserId && this.token && this.deviceKeys) {
+          const bundleRes = await this.authFetch(`/api/v1/devices/${recipientUserId}/prekeys`);
+          if (bundleRes.ok) {
+            const bundleData = await bundleRes.json();
+            const recipientBundle = bundleData.bundle;
+            if (recipientBundle) {
+              const sessionId = `${msg.conversationId}:${recipientBundle.deviceId}`;
+              let session = await clientDb.getSession(sessionId);
+              let initialHandshakePacket: HandshakePacket | undefined = undefined;
+
+              if (!session || !session.handshakePacket || msg.failureReason === 'VERIFICATION_FAILED') {
+                const handshake = initiateHybridHandshake(
+                  this.deviceKeys.deviceId,
+                  this.deviceKeys.publicKeys,
+                  this.deviceKeys.privateKeys,
+                  recipientBundle
+                );
+                session = createRatchetSession(
+                  handshake.masterSecret,
+                  recipientBundle.deviceId,
+                  msg.conversationId,
+                  handshake.handshakePacket
+                );
+                session.handshakePacket = handshake.handshakePacket;
+                await clientDb.saveSession(session);
+                initialHandshakePacket = handshake.handshakePacket;
+              } else {
+                initialHandshakePacket = session.handshakePacket;
+              }
+
+              const { messageKey, sequence, updatedSession } = deriveNextMessageKey(
+                session,
+                this.deviceKeys.deviceId
+              );
+              updatedSession.handshakePacket = session.handshakePacket;
+              await clientDb.saveSession(updatedSession);
+
+              const expiresAt = msg.expiresAt || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+              const payloadToEncrypt = msg.attachment
+                ? JSON.stringify({
+                    type: 'file_attachment',
+                    fileName: msg.attachment.fileName,
+                    fileSize: msg.attachment.fileSize,
+                    mimeType: msg.attachment.mimeType,
+                    dataUrl: msg.attachment.dataUrl,
+                    text: msg.text || ''
+                  })
+                : msg.text;
+
+              const envelope = createMessageEnvelope(
+                payloadToEncrypt,
+                rootId,
+                msg.conversationId,
+                this.deviceKeys.deviceId,
+                recipientBundle.deviceId,
+                messageKey,
+                sequence,
+                this.deviceKeys.privateKeys,
+                initialHandshakePacket,
+                expiresAt
+              );
+              envelope.senderUserId = this.userUuid!;
+              envelope.recipientUserId = recipientUserId;
+              envelope.allowOfflineStorage = true;
+
+              await clientDb.enqueueMessage({
+                clientMessageId: rootId,
+                conversationId: msg.conversationId,
+                recipientDeviceId: recipientBundle.deviceId,
+                envelope,
+                plaintext: msg.text,
+                timestamp: Date.now(),
+                retries: 0
+              });
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[SyncEngine] Error rebuilding envelope on retry:', err);
+      }
+    }
+
+    await this.processSyncQueue();
+    return true;
+  }
+
+  async retryAllFailedMessages(conversationId?: string): Promise<void> {
+    const failedMessages = await clientDb.getFailedMessages(conversationId);
+    for (const msg of failedMessages) {
+      await this.retryMessage(msg.clientMessageId || msg.id);
+    }
+  }
+
+  async reconnect(): Promise<void> {
+    this.setConnectionState('reconnecting');
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+    this.connectWs();
+    await this.processSyncQueue();
+  }
+
+  getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  sendReaction(conversationId: string, clientMessageId: string, emoji: string, messageId?: string) {
+    const rootId = clientMessageId.split('#chunk')[0];
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'reaction',
+        conversationId,
+        clientMessageId: rootId,
+        messageId: messageId || rootId,
+        emoji
+      }));
+    } else if (this.token) {
+      this.authFetch(`/api/v1/messages/${encodeURIComponent(messageId || rootId)}/reaction`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          clientMessageId: rootId,
+          conversationId,
+          emoji
+        })
+      }).catch(() => {});
+    }
+  }
+
+  sendTyping(conversationId: string, isTyping: boolean) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'typing',
+          conversationId,
+          isTyping
+        })
+      );
+    }
+  }
+
+  sendPresence(status: 'online' | 'away' | 'offline') {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'presence',
+          status
+        })
+      );
     }
   }
 

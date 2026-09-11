@@ -1,35 +1,101 @@
 @import "tailwindcss";
 
 @layer base {
-  :root {
+  /* Default: YChat Theme (Derived from ychat-theme.jpg) */
+  :root, [data-theme="ychat"] {
+    --ychat-primary: #7c3aed;
+    --ychat-primary-hover: #6d28d9;
+    --ychat-primary-active: #5b21b6;
+    --ychat-secondary: #4f46e5;
+    --ychat-background: #090a14;
+    --ychat-surface: #111224;
+    --ychat-surface-elevated: #1a1b35;
+    --ychat-surface-hover: #222344;
+    --ychat-border: #232042;
+    --ychat-border-subtle: rgba(124, 58, 237, 0.18);
+    --ychat-text: #f5f3ff;
+    --ychat-text-muted: #9490b8;
+    --ychat-text-faint: #656088;
+    --ychat-bubble-in: #191830;
+    --ychat-bubble-out: #6d28d9;
+    --ychat-accent: #38bdf8;
+    --ychat-danger: #ef4444;
+
     --brand-primary: #7c3aed;
-    --brand-hover: #6d28d9;
-    --brand-active: #5b21b6;
-    --brand-light: #8b5cf6;
-    --brand-subtle: rgba(124, 58, 237, 0.15);
-
-    --bg-app: #0b0914;
-    --bg-surface: #131022;
-    --bg-elevated: #1b1630;
-    --bg-active: #251f42;
-    --bg-bubble-out: #5b21b6;
-    --bg-bubble-in: #1c1833;
-
-    --border-subtle: #241e42;
-    --border-strong: #3b326b;
-
+    --bg-app: #090a14;
+    --bg-surface: #111224;
+    --bg-elevated: #1a1b35;
+    --border-subtle: #232042;
     --text-primary: #f5f3ff;
-    --text-secondary: #a79fc2;
-    --text-muted: #6f6791;
+    --text-secondary: #9490b8;
 
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
 
+  /* Classic Dark Theme */
+  [data-theme="dark"] {
+    --ychat-primary: #6366f1;
+    --ychat-primary-hover: #4f46e5;
+    --ychat-primary-active: #4338ca;
+    --ychat-secondary: #3b82f6;
+    --ychat-background: #090d16;
+    --ychat-surface: #0f172a;
+    --ychat-surface-elevated: #1e293b;
+    --ychat-surface-hover: #334155;
+    --ychat-border: #1e293b;
+    --ychat-border-subtle: rgba(255, 255, 255, 0.08);
+    --ychat-text: #f8fafc;
+    --ychat-text-muted: #94a3b8;
+    --ychat-text-faint: #64748b;
+    --ychat-bubble-in: #1e293b;
+    --ychat-bubble-out: #4f46e5;
+    --ychat-accent: #38bdf8;
+    --ychat-danger: #ef4444;
+
+    --brand-primary: #6366f1;
+    --bg-app: #090d16;
+    --bg-surface: #0f172a;
+    --bg-elevated: #1e293b;
+    --border-subtle: #1e293b;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+  }
+
+  /* Light Theme (Clean WhatsApp/Telegram-inspired high-contrast light mode) */
+  [data-theme="light"], .light {
+    --ychat-primary: #6366f1;
+    --ychat-primary-hover: #4f46e5;
+    --ychat-primary-active: #4338ca;
+    --ychat-secondary: #0284c7;
+    --ychat-background: #f1f5f9;
+    --ychat-surface: #ffffff;
+    --ychat-surface-elevated: #f8fafc;
+    --ychat-surface-hover: #f1f5f9;
+    --ychat-border: #e2e8f0;
+    --ychat-border-subtle: #cbd5e1;
+    --ychat-text: #0f172a;
+    --ychat-text-muted: #475569;
+    --ychat-text-faint: #94a3b8;
+    --ychat-bubble-in: #ffffff;
+    --ychat-bubble-out: #6366f1;
+    --ychat-accent: #0284c7;
+    --ychat-danger: #dc2626;
+
+    --brand-primary: #6366f1;
+    --bg-app: #f1f5f9;
+    --bg-surface: #ffffff;
+    --bg-elevated: #f8fafc;
+    --border-subtle: #e2e8f0;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+  }
+
   body {
     font-family: var(--font-sans);
-    background-color: var(--bg-app);
-    color: var(--text-primary);
+    background-color: var(--ychat-background);
+    color: var(--ychat-text);
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
   /* Custom subtle scrollbar */
@@ -41,10 +107,228 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #2b244d;
+    background: var(--ychat-border);
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #3f3570;
+    background: var(--ychat-primary);
   }
 }
+
+/* Chat Wallpaper Patterns */
+.wallpaper-ychat {
+  background-image: linear-gradient(to bottom, rgba(9, 10, 20, 0.78), rgba(9, 10, 20, 0.9)), url('/ychat-theme.jpg');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.light .wallpaper-ychat {
+  background-image: linear-gradient(to bottom, rgba(241, 245, 249, 0.88), rgba(241, 245, 249, 0.96)), url('/ychat-theme.jpg');
+  background-size: cover;
+  background-position: center;
+}
+
+.wallpaper-grid {
+  background-image: linear-gradient(to right, rgba(99, 102, 241, 0.05) 1px, transparent 1px),
+                    linear-gradient(to bottom, rgba(99, 102, 241, 0.05) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.wallpaper-dots {
+  background-image: radial-gradient(rgba(124, 58, 237, 0.12) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+.wallpaper-minimal {
+  background: transparent;
+}
+
+.wallpaper-clean-light {
+  background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+}
+
+.wallpaper-custom {
+  background-color: transparent !important;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: cover;
+}
+
+/* ==========================================================================
+   Comprehensive Light Theme Overrides
+   ========================================================================== */
+html.light,
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+html.light,
+html.light body,
+[data-theme="light"],
+[data-theme="light"] body {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+}
+
+/* Base structural surfaces */
+html.light .bg-slate-950,
+[data-theme="light"] .bg-slate-950 {
+  background-color: #f8fafc !important;
+}
+
+html.light .bg-slate-950\/95,
+html.light .bg-slate-950\/90,
+html.light .bg-slate-950\/80,
+html.light .bg-slate-950\/70,
+html.light .bg-slate-950\/60,
+html.light .bg-slate-950\/50,
+[data-theme="light"] .bg-slate-950\/95,
+[data-theme="light"] .bg-slate-950\/90,
+[data-theme="light"] .bg-slate-950\/80,
+[data-theme="light"] .bg-slate-950\/70,
+[data-theme="light"] .bg-slate-950\/60,
+[data-theme="light"] .bg-slate-950\/50 {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .bg-slate-900,
+[data-theme="light"] .bg-slate-900 {
+  background-color: #ffffff !important;
+}
+
+html.light .bg-slate-900\/90,
+html.light .bg-slate-900\/80,
+html.light .bg-slate-900\/60,
+html.light .bg-slate-900\/40,
+[data-theme="light"] .bg-slate-900\/90,
+[data-theme="light"] .bg-slate-900\/80,
+[data-theme="light"] .bg-slate-900\/60,
+[data-theme="light"] .bg-slate-900\/40 {
+  background-color: rgba(255, 255, 255, 0.95) !important;
+}
+
+html.light .bg-slate-800,
+[data-theme="light"] .bg-slate-800 {
+  background-color: #f1f5f9 !important;
+}
+
+html.light .bg-slate-800\/90,
+html.light .bg-slate-800\/80,
+html.light .bg-slate-800\/60,
+html.light .bg-slate-800\/50,
+html.light .bg-slate-800\/40,
+[data-theme="light"] .bg-slate-800\/90,
+[data-theme="light"] .bg-slate-800\/80,
+[data-theme="light"] .bg-slate-800\/60,
+[data-theme="light"] .bg-slate-800\/50,
+[data-theme="light"] .bg-slate-800\/40 {
+  background-color: #e2e8f0 !important;
+}
+
+/* Hover surfaces */
+html.light .hover\:bg-slate-800:hover,
+html.light .hover\:bg-slate-800\/60:hover,
+html.light .hover\:bg-slate-800\/40:hover,
+html.light .hover\:bg-slate-700:hover,
+[data-theme="light"] .hover\:bg-slate-800:hover,
+[data-theme="light"] .hover\:bg-slate-800\/60:hover,
+[data-theme="light"] .hover\:bg-slate-800\/40:hover,
+[data-theme="light"] .hover\:bg-slate-700:hover {
+  background-color: #e2e8f0 !important;
+}
+
+html.light .hover\:bg-slate-900:hover,
+[data-theme="light"] .hover\:bg-slate-900:hover {
+  background-color: #f8fafc !important;
+}
+
+/* Borders */
+html.light .border-slate-800,
+html.light .border-slate-800\/80,
+html.light .border-slate-800\/60,
+html.light .border-slate-800\/50,
+html.light .border-slate-800\/40,
+[data-theme="light"] .border-slate-800,
+[data-theme="light"] .border-slate-800\/80,
+[data-theme="light"] .border-slate-800\/60,
+[data-theme="light"] .border-slate-800\/50,
+[data-theme="light"] .border-slate-800\/40 {
+  border-color: #e2e8f0 !important;
+}
+
+html.light .border-slate-700,
+html.light .border-slate-700\/50,
+html.light .border-slate-700\/40,
+[data-theme="light"] .border-slate-700,
+[data-theme="light"] .border-slate-700\/50,
+[data-theme="light"] .border-slate-700\/40 {
+  border-color: #cbd5e1 !important;
+}
+
+/* Typography */
+html.light .text-white,
+html.light .text-slate-100,
+html.light .text-slate-200,
+[data-theme="light"] .text-white,
+[data-theme="light"] .text-slate-100,
+[data-theme="light"] .text-slate-200 {
+  color: #0f172a !important;
+}
+
+html.light .text-slate-300,
+html.light .text-slate-400,
+[data-theme="light"] .text-slate-300,
+[data-theme="light"] .text-slate-400 {
+  color: #475569 !important;
+}
+
+html.light .text-slate-500,
+[data-theme="light"] .text-slate-500 {
+  color: #64748b !important;
+}
+
+/* Input elements in Light Mode */
+html.light input:not([type="checkbox"]):not([type="radio"]),
+html.light textarea,
+[data-theme="light"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="light"] textarea {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html.light input::placeholder,
+html.light textarea::placeholder,
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+/* Modals backdrop */
+html.light .bg-black\/70,
+[data-theme="light"] .bg-black\/70 {
+  background-color: rgba(15, 23, 42, 0.45) !important;
+}
+
+/* Incoming chat bubbles and message cards in Light Mode */
+html.light .incoming-message-bubble,
+[data-theme="light"] .incoming-message-bubble {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light .incoming-message-bubble .text-slate-200,
+html.light .incoming-message-bubble .text-white,
+[data-theme="light"] .incoming-message-bubble .text-slate-200,
+[data-theme="light"] .incoming-message-bubble .text-white {
+  color: #0f172a !important;
+}
+
+html.light .incoming-message-bubble .text-slate-400,
+[data-theme="light"] .incoming-message-bubble .text-slate-400 {
+  color: #64748b !important;
+}
+

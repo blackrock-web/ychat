@@ -35,7 +35,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     user,
     settings,
     searchStoredMessages,
-    unreadNotificationsCount
+    unreadNotificationsCount,
+    getUserPresence,
+    typingMap
   } = useChat();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -244,6 +246,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             filteredConversations.map((conv) => {
               const isActive = activeConversation?.id === conv.id;
               const isMuted = settings.mutedConversations.includes(conv.id);
+              const partnerPresence = getUserPresence(conv.recipientUuid);
+              const isPartnerTyping = !!typingMap[conv.id];
 
               return (
                 <div
@@ -256,10 +260,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       : 'hover:bg-slate-800/60'
                   }`}
                 >
-                  {/* Avatar component with initials or custom image */}
+                  {/* Avatar component with initials or custom image & real-time presence */}
                   <Avatar
                     name={conv.recipientDisplayName}
+                    avatarUrl={conv.recipientAvatarUrl}
                     size="md"
+                    presenceStatus={partnerPresence.status}
                     verified={conv.isVerifiedSafetyNumber}
                   />
 
@@ -283,7 +289,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                     <div className="flex items-center justify-between">
                       <p className="text-[11px] text-slate-400 truncate pr-2">
-                        {conv.lastMessageText ? (
+                        {isPartnerTyping ? (
+                          <span className="text-emerald-400 font-medium animate-pulse flex items-center space-x-1">
+                            <span>typing...</span>
+                          </span>
+                        ) : conv.lastMessageText ? (
                           searchTerm && searchTab === 'conversations' ? (
                             highlightKeyword(conv.lastMessageText, searchTerm)
                           ) : (
@@ -321,6 +331,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               name={user.displayName || user.username}
               avatarUrl={user.avatarUrl}
               size="sm"
+              presenceStatus="online"
             />
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold text-slate-200 truncate">

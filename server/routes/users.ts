@@ -2,6 +2,7 @@ import express, { Response } from 'express';
 import { db } from '../db';
 import { requireAuth, AuthenticatedRequest } from './auth';
 import { wsManager } from '../ws';
+import { syncUserProfileToSupabase } from '../services/supabaseAuth';
 
 export const usersRouter = express.Router();
 
@@ -30,18 +31,29 @@ usersRouter.get('/me', requireAuth, (req: AuthenticatedRequest, res: Response) =
     username: user.username,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
+    backgroundImage: user.backgroundImage,
     about: user.about,
+    preferences: user.preferences || {},
     createdAt: user.createdAt
   });
 });
 
 // PUT /api/v1/users/profile
-usersRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+usersRouter.put('/profile', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  const { displayName, about, avatarUrl } = req.body;
+  const { displayName, about, avatarUrl, backgroundImage, preferences } = req.body;
 
-  const updated = db.updateUserProfile(req.user.userId, { displayName, about, avatarUrl });
+  const updated = db.updateUserProfile(req.user.userId, {
+    displayName,
+    about,
+    avatarUrl,
+    backgroundImage,
+    preferences
+  });
   if (!updated) return res.status(404).json({ error: 'User not found' });
+
+  // Sync to external Supabase user_profiles if configured
+  await syncUserProfileToSupabase(updated);
 
   return res.status(200).json({
     status: 'updated',
@@ -50,8 +62,34 @@ usersRouter.put('/profile', requireAuth, (req: AuthenticatedRequest, res: Respon
       username: updated.username,
       displayName: updated.displayName,
       avatarUrl: updated.avatarUrl,
-      about: updated.about
+      backgroundImage: updated.backgroundImage,
+      about: updated.about,
+      preferences: updated.preferences || {}
     }
+  });
+});
+
+// GET /api/v1/users/preferences
+usersRouter.get('/preferences', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const prefs = db.getUserPreferences(req.user.userId);
+  return res.status(200).json({ preferences: prefs });
+});
+
+// PUT /api/v1/users/preferences
+usersRouter.put('/preferences', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const newPrefs = req.body.preferences || req.body;
+  const updatedPrefs = db.updateUserPreferences(req.user.userId, newPrefs);
+
+  const user = db.findUserById(req.user.userId);
+  if (user) {
+    await syncUserProfileToSupabase(user);
+  }
+
+  return res.status(200).json({
+    status: 'updated',
+    preferences: updatedPrefs
   });
 });
 
@@ -114,9 +152,35 @@ usersRouter.get('/:uuid/presence', requireAuth, (req: AuthenticatedRequest, res:
     }
   }
 
-  const isOnline = wsManager.isUserOnline(targetUuid);
+  const presence = wsManager.getUserPresence(targetUuid);
   return res.status(200).json({
     uuid: targetUuid,
-    status: isOnline ? 'online' : 'offline'
+    status: presence.status,
+    lastSeen: presence.lastSeen
   });
+});
+
+// POST /api/v1/users/presence/batch
+// Get presence for multiple conversation partners in one call
+usersRouter.post('/presence/batch', requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const callerId = req.user!.userId;
+  const { userUuids } = req.body;
+
+  if (!Array.isArray(userUuids)) {
+    return res.status(400).json({ error: 'userUuids must be an array' });
+  }
+
+  const sharedPartners = new Set(db.getUserSharedParticipantIds(callerId));
+  sharedPartners.add(callerId);
+
+  const presences: Record<string, { status: 'online' | 'away' | 'offline'; lastSeen: number }> = {};
+  for (const uuid of userUuids) {
+    if (sharedPartners.has(uuid)) {
+      presences[uuid] = wsManager.getUserPresence(uuid);
+    } else {
+      presences[uuid] = { status: 'offline', lastSeen: 0 };
+    }
+  }
+
+  return res.status(200).json({ presences });
 });

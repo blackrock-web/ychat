@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ThemeProvider } from './context/ThemeContext';
 import { ChatProvider, useChat } from './context/ChatContext';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -74,8 +75,10 @@ const ChatAppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <ChatProvider>
-      <ChatAppContent />
-    </ChatProvider>
+    <ThemeProvider>
+      <ChatProvider>
+        <ChatAppContent />
+      </ChatProvider>
+    </ThemeProvider>
   );
 }

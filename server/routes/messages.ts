@@ -96,29 +96,17 @@ messagesRouter.post(
       });
     }
 
-    // 4. OFFLINE RECIPIENT POLICY ENFORCEMENT (15-Minute TTL)
+    // 4. OFFLINE RECIPIENT POLICY ENFORCEMENT & CONFIGURABLE RETENTION
     const isRecipientOnline = wsManager.isUserOnline(recipientUserId);
-    if (!isRecipientOnline && allowOfflineStorage !== true && allowOfflineStorage !== 'true') {
-      serverSyncDiagnostic.log('OFFLINE_HOLD_15MIN', {
-        clientMessageId,
-        conversationId,
-        senderUserId,
-        recipientUserId,
-        details: { status: 'rejected_offline_unauthorized' }
-      });
-      return res.status(409).json({
-        error: `${recipientUser.displayName || recipientUser.username} is currently offline. Store this encrypted message for up to 15 minutes?`,
-        requiresOfflineConfirmation: true,
-        recipientUuid: recipientUserId,
-        recipientName: recipientUser.displayName || recipientUser.username
-      });
-    }
 
-    // Calculate 15-minute maximum TTL for temporary delivery queue
+    // Calculate server retention TTL (Sender configured, default 24h = 1440m, server enforced maximum 7 days = 10080m)
+    const SERVER_MAX_RETENTION_MINUTES = 7 * 24 * 60; // 10080 minutes = 7 days
+    const requestedRetention = Number(req.body.retentionMinutes || req.body.offlineRetentionMinutes || 1440);
+    const retentionMinutes = Math.min(Math.max(requestedRetention, 5), SERVER_MAX_RETENTION_MINUTES);
     const now = new Date();
-    const computedExpiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString();
+    const computedExpiresAt = new Date(now.getTime() + retentionMinutes * 60 * 1000).toISOString();
 
-    // 5. Store ciphertext envelope with authoritative sender_uuid and recipient_uuid (idempotent on clientMessageId)
+    // 5. Store ciphertext envelope with authoritative sender_uuid and recipient_uuid (strictly encrypted, zero plaintext)
     const record = db.storeMessage({
       conversationId,
       senderUserId,
@@ -138,13 +126,13 @@ messagesRouter.post(
     });
 
     if (!isRecipientOnline) {
-      serverSyncDiagnostic.log('OFFLINE_HOLD_15MIN', {
+      serverSyncDiagnostic.log('OFFLINE_HOLD', {
         clientMessageId,
         conversationId,
         messageId: record.id,
         senderUserId,
         recipientUserId,
-        details: { status: 'stored_temporary_queue_15min_ttl', expiresAt: computedExpiresAt }
+        details: { status: 'stored_temporary_queue', expiresAt: computedExpiresAt, retentionMinutes }
       });
     }
 
@@ -173,7 +161,7 @@ messagesRouter.post(
       clientMessageId: record.clientMessageId,
       serverSequence: record.serverSequence,
       createdAt: record.createdAt,
-      status: record.deliveredAt ? 'delivered' : (isRecipientOnline ? 'dispatched' : 'stored_offline_15m_ttl')
+      status: record.deliveredAt ? 'delivered' : (isRecipientOnline ? 'dispatched' : 'stored_offline')
     });
   }
 );
@@ -212,7 +200,7 @@ messagesRouter.get('/:messageId', requireAuth, validateMessageAccess('messageId'
 messagesRouter.post('/:messageId/receipt', requireAuth, validateMessageAccess('messageId'), (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user!.userId;
   const messageId = String(req.params.messageId);
-  const { clientMessageId, status } = req.body;
+  const { clientMessageId, status, failureCategory, reason } = req.body;
 
   const targetMsg = db.getMessageByIdOrClientId(messageId) || (clientMessageId ? db.getMessageByIdOrClientId(clientMessageId) : undefined);
   if (!targetMsg) {
@@ -226,7 +214,38 @@ messagesRouter.post('/:messageId/receipt', requireAuth, validateMessageAccess('m
   }
 
   // Notify ONLY the participants in this specific conversation
-  wsManager.sendReceiptToConversation(targetMsg.conversationId, String(clientMessageId || messageId), String(status || 'delivered'));
+  wsManager.sendReceiptToConversation(
+    targetMsg.conversationId,
+    String(clientMessageId || messageId),
+    String(status || 'delivered'),
+    failureCategory,
+    reason
+  );
 
   return res.status(200).json({ status: 'receipt_recorded' });
 });
+
+// POST /api/v1/messages/:messageId/reaction
+messagesRouter.post('/:messageId/reaction', requireAuth, validateMessageAccess('messageId'), (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user!.userId;
+  const messageId = String(req.params.messageId);
+  const { clientMessageId, emoji, conversationId, action } = req.body;
+
+  const targetMsg = db.getMessageByIdOrClientId(messageId) || (clientMessageId ? db.getMessageByIdOrClientId(clientMessageId) : undefined);
+  const convId = conversationId || targetMsg?.conversationId;
+
+  if (!convId || !db.isUserMemberOfConversation(userId, convId)) {
+    return res.status(403).json({ error: 'Forbidden: Not a participant in conversation' });
+  }
+
+  wsManager.sendReactionToConversation(convId, {
+    clientMessageId: String(clientMessageId || messageId),
+    messageId,
+    userUuid: userId,
+    emoji: String(emoji),
+    action: action || 'toggle'
+  });
+
+  return res.status(200).json({ status: 'reaction_recorded' });
+});
+

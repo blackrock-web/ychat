@@ -316,12 +316,14 @@ export const AuthModal: React.FC = () => {
 
         {/* Brand Header */}
         <div className="text-center space-y-2">
-          <div className="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-tr from-violet-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-violet-500/25">
-            <Lock className="w-7 h-7 text-white" />
-          </div>
+          <img
+            src="/1.jpg"
+            alt="YChat Logo"
+            className="w-16 h-16 mx-auto rounded-2xl object-cover shadow-xl shadow-violet-500/25 border-2 border-violet-500/30"
+          />
           <h1 className="text-2xl font-black text-white tracking-tight">YChat</h1>
           <p className="text-xs text-slate-400">
-            Privacy-Focused End-to-End Post-Quantum Encrypted Messaging
+            Private & Secure End-to-End Encrypted Messenger
           </p>
         </div>
 
