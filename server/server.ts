@@ -67,6 +67,7 @@ async function seedDemoAccounts() {
         publicKemKey: devA.publicKeys.kemKey
       });
     } else {
+      existingDevA.userId = userA.id;
       existingDevA.publicSignKey = devA.publicKeys.signingKey;
       existingDevA.publicDhKey = devA.publicKeys.dhKey;
       existingDevA.publicKemKey = devA.publicKeys.kemKey;
@@ -110,6 +111,7 @@ async function seedDemoAccounts() {
         publicKemKey: devB.publicKeys.kemKey
       });
     } else {
+      existingDevB.userId = userB.id;
       existingDevB.publicSignKey = devB.publicKeys.signingKey;
       existingDevB.publicDhKey = devB.publicKeys.dhKey;
       existingDevB.publicKemKey = devB.publicKeys.kemKey;
@@ -152,6 +154,7 @@ async function seedDemoAccounts() {
         publicKemKey: devC.publicKeys.kemKey
       });
     } else {
+      existingDevC.userId = userC.id;
       existingDevC.publicSignKey = devC.publicKeys.signingKey;
       existingDevC.publicDhKey = devC.publicKeys.dhKey;
       existingDevC.publicKemKey = devC.publicKeys.kemKey;
@@ -168,6 +171,13 @@ async function seedDemoAccounts() {
         (d.userId !== userA.id || d.id === devA.deviceId) &&
         (d.userId !== userB.id || d.id === devB.deviceId) &&
         (d.userId !== userC.id || d.id === devC.deviceId)
+    );
+
+    // Filter out corrupted test messages where sender signing key mismatched device key
+    (db as any).data.messages = ((db as any).data.messages || []).filter(
+      (m: any) =>
+        m.id !== 'd7be4f2b-7600-439a-b3a0-6518d07c2cd1' &&
+        m.id !== '3d286126-0d4b-4b03-af1f-a8ae28772ca9'
     );
 
     // Ensure default direct conversation exists between Alice and Bob

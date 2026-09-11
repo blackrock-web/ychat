@@ -318,58 +318,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )
         )}
       </div>
-
-      {/* User Profile Bar (Bottom of Sidebar) */}
-      {user && (
-        <div className="p-3 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
-          <div
-            onClick={onOpenProfile}
-            className="flex items-center space-x-2.5 min-w-0 cursor-pointer p-1 rounded-lg hover:bg-slate-900 transition-colors flex-1 mr-2"
-            title="Open Profile"
-          >
-            <Avatar
-              name={user.displayName || user.username}
-              avatarUrl={user.avatarUrl}
-              size="sm"
-              presenceStatus="online"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-slate-200 truncate">
-                {user.displayName}
-              </div>
-              <div className="text-[10px] text-slate-500 truncate font-mono">
-                @{user.username}
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center space-x-1">
-            {onOpenNotifications && (
-              <button
-                id="sidebar-notifications-btn"
-                onClick={onOpenNotifications}
-                className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors relative"
-                title="Notifications"
-              >
-                <Bell className="w-4 h-4" />
-                {unreadNotificationsCount > 0 && (
-                  <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-violet-500" />
-                )}
-              </button>
-            )}
-            {onOpenSettings && (
-              <button
-                id="sidebar-settings-btn"
-                onClick={onOpenSettings}
-                className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors"
-                title="Settings"
-              >
-                <Sliders className="w-4 h-4" />
-              </button>
-            )}
-          </div>
-        </div>
-      )}
     </aside>
   );
 };

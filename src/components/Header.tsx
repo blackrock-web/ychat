@@ -1,15 +1,17 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useChat } from '../context/ChatContext';
 import {
   ShieldCheck,
   Wifi,
   WifiOff,
-  Lock,
   LogOut,
   Bell,
   Settings,
   Search,
-  X
+  X,
+  MoreVertical,
+  User,
+  Sliders
 } from 'lucide-react';
 import { Avatar } from './Avatar';
 
@@ -38,8 +40,36 @@ export const Header: React.FC<HeaderProps> = ({
     logout
   } = useChat();
 
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on click outside or Escape key
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsMenuOpen(false);
+      }
+    };
+
+    if (isMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      document.addEventListener('keydown', handleKeyDown);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMenuOpen]);
+
   return (
-    <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 md:px-6 flex items-center justify-between z-20 gap-2">
+    <header className="h-16 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 md:px-6 flex items-center justify-between z-30 gap-2 relative">
       {/* Brand & App Info */}
       <div className="flex items-center space-x-3 shrink-0">
         <img
@@ -85,9 +115,9 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Controls & Connection Status */}
+      {/* Controls & Connection Status + 3-Dots Menu */}
       <div className="flex items-center space-x-2 sm:space-x-3 shrink-0">
-        {/* Offline Simulation Button */}
+        {/* Offline Simulation / Connection Badge */}
         <button
           id="header-offline-toggle-btn"
           onClick={toggleSimulatedOffline}
@@ -116,82 +146,176 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </button>
 
-        {/* Zero-Knowledge Security Audit Button */}
-        <button
-          id="header-audit-btn"
-          onClick={onOpenAudit}
-          className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-violet-950/40 text-violet-300 border border-violet-800/50 hover:border-violet-600 transition-all shadow-xs cursor-pointer"
-          title="Inspect cryptographic zero-knowledge guarantee"
-        >
-          <ShieldCheck className="w-4 h-4 text-violet-400" />
-          <span className="hidden md:inline">Security Audit</span>
-        </button>
-
-        {/* Notifications Bell Button */}
-        {onOpenNotifications && (
+        {/* 3-Dots More Options Menu Button (Consolidates all Profile & Account Actions) */}
+        <div className="relative" ref={menuRef}>
           <button
-            id="header-notifications-btn"
-            onClick={onOpenNotifications}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all relative cursor-pointer"
-            title="Notifications"
+            id="header-menu-btn"
+            onClick={() => setIsMenuOpen((prev) => !prev)}
+            aria-expanded={isMenuOpen}
+            aria-label="More options and profile menu"
+            className={`p-2 rounded-lg transition-all cursor-pointer relative flex items-center justify-center ${
+              isMenuOpen
+                ? 'bg-violet-600 text-white shadow-md shadow-violet-600/30 ring-2 ring-violet-500/40'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/80 hover:text-white'
+            }`}
+            title="Profile, Settings, Security & Notifications"
           >
-            <Bell className="w-4 h-4" />
+            <MoreVertical className="w-4 h-4" />
+            {/* Notification indicator dot */}
             {unreadNotificationsCount > 0 && (
-              <span className="absolute top-1 right-1 px-1 min-w-[16px] h-4 rounded-full bg-violet-600 text-white text-[10px] font-bold flex items-center justify-center shadow-xs">
+              <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-violet-500 text-white text-[9px] font-bold flex items-center justify-center shadow-xs">
                 {unreadNotificationsCount > 9 ? '9+' : unreadNotificationsCount}
               </span>
             )}
           </button>
-        )}
 
-        {/* Settings Button */}
-        {onOpenSettings && (
-          <button
-            id="header-settings-btn"
-            onClick={onOpenSettings}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-all cursor-pointer"
-            title="Settings"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-        )}
-
-        {/* User profile & Logout */}
-        {user && (
-          <div className="flex items-center space-x-2 pl-2 border-l border-slate-800">
-            {/* Clickable Profile Badge */}
+          {/* Dropdown Menu */}
+          {isMenuOpen && (
             <div
-              id="header-profile-trigger"
-              onClick={onOpenProfile}
-              className="flex items-center space-x-2 cursor-pointer p-1 rounded-lg hover:bg-slate-800/60 transition-colors"
-              title="View Profile"
+              id="header-more-menu"
+              className="absolute right-0 mt-2 w-72 sm:w-80 rounded-xl bg-slate-900 border border-slate-800 shadow-2xl shadow-black/80 py-2 z-50 animate-in fade-in slide-in-from-top-2 duration-150 divide-y divide-slate-800/60"
             >
-              <Avatar
-                name={user.displayName || user.username}
-                avatarUrl={user.avatarUrl}
-                size="sm"
-                presenceStatus="online"
-              />
-              <div className="text-left hidden lg:block">
-                <div className="text-xs font-semibold text-slate-200 truncate max-w-[110px]">
-                  {user.displayName}
+              {/* Profile Card Header */}
+              {user && (
+                <div
+                  id="header-profile-trigger"
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    onOpenProfile?.();
+                  }}
+                  className="p-3 hover:bg-slate-800/60 cursor-pointer transition-colors flex items-center space-x-3 group"
+                  title="Click to view & edit profile"
+                >
+                  <Avatar
+                    name={user.displayName || user.username}
+                    avatarUrl={user.avatarUrl}
+                    size="md"
+                    presenceStatus="online"
+                  />
+                  <div className="flex-1 min-w-0 text-left">
+                    <div className="text-xs font-semibold text-slate-100 truncate group-hover:text-violet-300 transition-colors">
+                      {user.displayName}
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-mono truncate">
+                      @{user.username}
+                    </div>
+                    <div className="text-[10px] text-violet-400 mt-0.5 flex items-center space-x-1">
+                      <span>Edit profile & key identity &rarr;</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="text-[10px] text-slate-400 font-mono truncate max-w-[110px]">
-                  @{user.username}
-                </div>
+              )}
+
+              {/* Main Menu Actions */}
+              <div className="py-1">
+                {/* My Profile */}
+                {onOpenProfile && (
+                  <button
+                    id="header-profile-menu-item"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      onOpenProfile();
+                    }}
+                    className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800/70 hover:text-white flex items-center space-x-3 transition-colors cursor-pointer"
+                  >
+                    <div className="p-1.5 rounded-md bg-slate-800 text-slate-300">
+                      <User className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <div className="font-medium">My Profile</div>
+                      <div className="text-[10px] text-slate-400">Account identity & paired devices</div>
+                    </div>
+                  </button>
+                )}
+
+                {/* Settings */}
+                {onOpenSettings && (
+                  <button
+                    id="header-settings-menu-item"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      onOpenSettings();
+                    }}
+                    className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800/70 hover:text-white flex items-center space-x-3 transition-colors cursor-pointer"
+                  >
+                    <div className="p-1.5 rounded-md bg-slate-800 text-slate-300">
+                      <Settings className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <div className="font-medium">Settings & Themes</div>
+                      <div className="text-[10px] text-slate-400">Themes, retry policies & preferences</div>
+                    </div>
+                  </button>
+                )}
+
+                {/* Notifications */}
+                {onOpenNotifications && (
+                  <button
+                    id="header-notifications-menu-item"
+                    onClick={() => {
+                      setIsMenuOpen(false);
+                      onOpenNotifications();
+                    }}
+                    className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800/70 hover:text-white flex items-center justify-between transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center space-x-3">
+                      <div className="p-1.5 rounded-md bg-slate-800 text-slate-300">
+                        <Bell className="w-3.5 h-3.5" />
+                      </div>
+                      <div>
+                        <div className="font-medium">Notifications</div>
+                        <div className="text-[10px] text-slate-400">Security alerts & delivery receipts</div>
+                      </div>
+                    </div>
+                    {unreadNotificationsCount > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-full bg-violet-600 text-white text-[10px] font-bold">
+                        {unreadNotificationsCount} new
+                      </span>
+                    )}
+                  </button>
+                )}
+
+                {/* Security Audit */}
+                <button
+                  id="header-audit-menu-item"
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    onOpenAudit();
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800/70 hover:text-white flex items-center space-x-3 transition-colors cursor-pointer"
+                >
+                  <div className="p-1.5 rounded-md bg-violet-950/60 text-violet-300 border border-violet-800/50">
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="font-medium text-violet-300">Security & Cryptography Audit</div>
+                    <div className="text-[10px] text-slate-400">Zero-knowledge, post-quantum ML-KEM & DSA</div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Logout Action */}
+              <div className="py-1">
+                <button
+                  id="header-logout-menu-item"
+                  onClick={() => {
+                    setIsMenuOpen(false);
+                    logout();
+                  }}
+                  className="w-full px-3.5 py-2 text-left text-xs text-rose-300 hover:bg-rose-950/20 hover:text-rose-200 flex items-center space-x-3 transition-colors cursor-pointer"
+                >
+                  <div className="p-1.5 rounded-md bg-rose-950/40 text-rose-400">
+                    <LogOut className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="font-medium">Sign Out</div>
+                    <div className="text-[10px] text-rose-400/80">Lock vault & purge local session keys</div>
+                  </div>
+                </button>
               </div>
             </div>
-
-            <button
-              id="header-logout-btn"
-              onClick={logout}
-              className="p-2 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-950/20 transition-all cursor-pointer"
-              title="Sign Out"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </header>
   );

@@ -407,6 +407,7 @@ class StorageEngine {
 
   savePrekeys(deviceId: string, prekeys: Array<{ id: number; dhKey: string; kemKey: string }>) {
     const now = new Date().toISOString();
+    this.data.devicePrekeys = this.data.devicePrekeys.filter(p => p.deviceId !== deviceId);
     for (const pk of prekeys) {
       this.data.devicePrekeys.push({
         id: crypto.randomUUID(),

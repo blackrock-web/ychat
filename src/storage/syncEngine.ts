@@ -310,7 +310,8 @@ export class SyncEngine {
       await clientDb.saveSession(session);
       initialHandshakePacket = handshake.handshakePacket;
     } else {
-      initialHandshakePacket = session.handshakePacket;
+      // Session already established: do NOT attach handshakePacket from an existing or peer session!
+      initialHandshakePacket = undefined;
     }
 
     // 2. Derive single-use Message Key
@@ -378,6 +379,7 @@ export class SyncEngine {
       clientMessageId,
       conversationId,
       senderDeviceId: this.deviceKeys.deviceId,
+      recipientDeviceId,
       senderUserUuid: this.userUuid,
       text: text || (attachment ? attachment.fileName : ''),
       timestamp: Date.now(),
@@ -410,6 +412,7 @@ export class SyncEngine {
           ciphertext: chunk.chunkCiphertext,
           nonce: chunk.nonce,
           signature: chunk.chunkSignature,
+          envelopeSignature: envelope.signature,
           encryptionVersion: chunk.encryptionVersion,
           sequence: chunk.sequence,
           handshakePacket: chunk.handshakePacket,
@@ -423,7 +426,6 @@ export class SyncEngine {
           conversationId,
           recipientDeviceId,
           envelope: chunkEnvelopeObj,
-          plaintext: text || (attachment ? attachment.fileName : ''),
           timestamp: Date.now(),
           retries: 0
         });
@@ -434,7 +436,6 @@ export class SyncEngine {
         conversationId,
         recipientDeviceId,
         envelope,
-        plaintext: text || (attachment ? attachment.fileName : ''),
         timestamp: Date.now(),
         retries: 0
       });
@@ -652,6 +653,7 @@ export class SyncEngine {
           chunkCount: envelope.chunkCount,
           chunkCiphertext: envelope.ciphertext,
           chunkSignature: envelope.signature,
+          envelopeSignature: envelope.envelopeSignature,
           nonce: envelope.nonce,
           sequence: envelope.sequence ?? 1,
           encryptionVersion: envelope.encryptionVersion,
@@ -677,16 +679,16 @@ export class SyncEngine {
       let session = await clientDb.getSession(sessionId);
       let sessionEstablishedViaHandshake = false;
 
-      // If no session exists yet, accept handshake from the attached handshakePacket
-      if (!session) {
-        if (!targetEnvelope.handshakePacket) {
-          console.warn('[SyncEngine] No session and no handshakePacket in envelope:', targetEnvelope.clientMessageId);
-          return;
-        }
+      const tryAcceptHandshake = async (): Promise<boolean> => {
+        if (!targetEnvelope?.handshakePacket) return false;
+        if (!this.deviceKeys?.privateKeys?.dhKey) return false;
 
-        if (!this.deviceKeys.privateKeys.dhKey) {
-          console.warn('[SyncEngine] Missing local private dhKey for handshake');
-          return;
+        // Verify that handshakePacket.senderSigningKey matches sender's verified device public key
+        if (
+          senderBundle.publicKeys.signingKey &&
+          targetEnvelope.handshakePacket.senderSigningKey !== senderBundle.publicKeys.signingKey
+        ) {
+          throw new Error('SECURITY VIOLATION: Handshake packet senderSigningKey does not match verified sender device key! Handshake rejected.');
         }
 
         const masterSecret = acceptHybridHandshake(
@@ -705,6 +707,25 @@ export class SyncEngine {
         session.handshakePacket = targetEnvelope.handshakePacket;
         await clientDb.saveSession(session);
         sessionEstablishedViaHandshake = true;
+        return true;
+      };
+
+      // If no session exists yet, accept handshake from the attached handshakePacket
+      if (!session) {
+        if (targetEnvelope.handshakePacket) {
+          await tryAcceptHandshake();
+        } else {
+          console.warn('[SyncEngine] No session and no handshakePacket in envelope:', targetEnvelope.clientMessageId);
+          return;
+        }
+      } else if (targetEnvelope.handshakePacket && targetEnvelope.sequence === 1) {
+        // Sender initiated a fresh ratchet session
+        await tryAcceptHandshake();
+      }
+
+      if (!session) {
+        console.warn('[SyncEngine] Failed to establish or load ratchet session:', targetEnvelope.clientMessageId);
+        return;
       }
 
       syncDiagnostic.record('RECIPIENT_HANDSHAKE_ESTABLISHED', {
@@ -718,14 +739,39 @@ export class SyncEngine {
       });
 
       // 4. Derive message key for this sequence and sender device
-      const messageKey = deriveRecipientMessageKey(
+      let messageKey = deriveRecipientMessageKey(
         session,
         targetEnvelope.senderDeviceId,
         targetEnvelope.sequence || 1
       );
 
       // 5. Verify ML-DSA-87 signature & Decrypt ChaCha20-Poly1305
-      const plaintext = verifyAndDecryptEnvelope(targetEnvelope, messageKey, senderBundle.publicKeys);
+      let plaintext: string;
+      try {
+        plaintext = verifyAndDecryptEnvelope(targetEnvelope, messageKey, senderBundle.publicKeys);
+      } catch (decryptErr: any) {
+        // If decryption failed with invalid tag and envelope has a handshakePacket that wasn't already processed:
+        if (
+          !sessionEstablishedViaHandshake &&
+          targetEnvelope.handshakePacket &&
+          (decryptErr?.message?.includes('invalid tag') || decryptErr?.message?.includes('tag'))
+        ) {
+          console.warn('[SyncEngine] Initial decryption failed with invalid tag, attempting handshake re-sync...');
+          const accepted = await tryAcceptHandshake();
+          if (accepted && session) {
+            messageKey = deriveRecipientMessageKey(
+              session,
+              targetEnvelope.senderDeviceId,
+              targetEnvelope.sequence || 1
+            );
+            plaintext = verifyAndDecryptEnvelope(targetEnvelope, messageKey, senderBundle.publicKeys);
+          } else {
+            throw decryptErr;
+          }
+        } else {
+          throw decryptErr;
+        }
+      }
 
       let messageText = plaintext;
       let fileAttachment: FileAttachment | undefined = undefined;
@@ -842,7 +888,9 @@ export class SyncEngine {
       });
     } catch (err: any) {
       const errMsg = err?.message || String(err);
+      const isTagMismatch = errMsg.includes('invalid tag');
       const isSecurityViolation =
+        isTagMismatch ||
         errMsg.includes('SECURITY VIOLATION') ||
         errMsg.includes('ML-DSA-87') ||
         errMsg.includes('Cryptographic verification') ||
@@ -860,7 +908,41 @@ export class SyncEngine {
             dropped: true
           }
         });
-        console.warn(`[SyncEngine] Security verification failed (${envelope.clientMessageId}): ${errMsg}`);
+        console.warn(`[SyncEngine] Verification or decryption failed (${envelope.clientMessageId}): ${errMsg}`);
+
+        // Persist visible placeholder so unverified or corrupted messages never disappear silently
+        const rootId = envelope.clientMessageId.split('#chunk')[0];
+        try {
+          const existingPlaceholder = await clientDb.getMessageById(rootId);
+          if (!existingPlaceholder) {
+            const failedPlaceholder: DecryptedMessage = {
+              id: rootId,
+              clientMessageId: rootId,
+              conversationId: envelope.conversationId,
+              senderDeviceId: envelope.senderDeviceId,
+              recipientDeviceId: envelope.recipientDeviceId,
+              senderUserUuid: envelope.senderUserId || 'unknown',
+              text: isTagMismatch
+                ? '[Unverified message: cryptographic integrity check failed]'
+                : '[Dropped unverified envelope: post-quantum signature verification failed]',
+              timestamp: Date.now(),
+              sequence: envelope.sequence || 1,
+              status: 'failed',
+              tamperVerified: false,
+              failureReason: 'VERIFICATION_FAILED',
+              errorMessage: isTagMismatch
+                ? 'Cryptographic integrity check failed (invalid tag)'
+                : 'Security violation: signature verification failed',
+              retryCount: 0,
+              retryable: false
+            };
+            await clientDb.saveMessage(failedPlaceholder);
+            this.messageListeners.forEach(cb => cb(failedPlaceholder));
+          }
+        } catch (saveErr) {
+          console.warn('[SyncEngine] Failed to save unverified message placeholder:', saveErr);
+        }
+
         // Notify sender of delivery failure without exposing cryptographic internals
         if (serverMessageId || envelope.clientMessageId) {
           this.sendReceipt(
@@ -965,7 +1047,7 @@ export class SyncEngine {
     } else {
       try {
         const conv = await clientDb.getConversation(msg.conversationId);
-        const recipientUserId = conv?.participants.find(p => p !== this.userUuid);
+        const recipientUserId = conv?.recipientUuid;
         if (recipientUserId && this.token && this.deviceKeys) {
           const bundleRes = await this.authFetch(`/api/v1/devices/${recipientUserId}/prekeys`);
           if (bundleRes.ok) {
@@ -993,7 +1075,7 @@ export class SyncEngine {
                 await clientDb.saveSession(session);
                 initialHandshakePacket = handshake.handshakePacket;
               } else {
-                initialHandshakePacket = session.handshakePacket;
+                initialHandshakePacket = undefined;
               }
 
               const { messageKey, sequence, updatedSession } = deriveNextMessageKey(

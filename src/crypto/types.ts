@@ -48,6 +48,7 @@ export interface EncryptedEnvelope {
   ciphertext: string;     // Base64 ChaCha20-Poly1305 ciphertext with tag
   nonce: string;          // Base64 96-bit nonce
   signature: string;      // Base64 ML-DSA-87 signature over metadata + ciphertext
+  envelopeSignature?: string; // For chunked envelopes: signature over full envelope
   encryptionVersion: string;
   sequence: number;
   serverSequence?: number;
@@ -123,6 +124,7 @@ export interface DecryptedMessage {
   clientMessageId: string;
   conversationId: string;
   senderDeviceId: string;
+  recipientDeviceId?: string;
   senderUserUuid: string;
   text: string;
   timestamp: number;

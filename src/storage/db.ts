@@ -27,7 +27,7 @@ export interface QueuedMessage {
   conversationId: string;
   recipientDeviceId: string;
   envelope: EncryptedEnvelope;
-  plaintext: string;
+  plaintext?: string;
   timestamp: number;
   retries: number;
   lastAttempt?: number;
@@ -474,6 +474,17 @@ class ClientStorage {
     return null;
   }
 
+  async deleteSession(sessionId: string): Promise<void> {
+    this.memoryStore.sessions.delete(sessionId);
+    await this.runTransaction('sessions', 'readwrite', (store) => {
+      return new Promise<void>((resolve) => {
+        const req = store.delete(sessionId);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+      });
+    });
+  }
+
   // ==========================================
   // Conversations Storage (Isolated per participant)
   // ==========================================
@@ -687,10 +698,14 @@ class ClientStorage {
     return all.filter(m => m.status === 'failed' && (!convId || m.conversationId === convId));
   }
 
+  async getMessages(convId: string): Promise<DecryptedMessage[]> {
+    return this.getMessagesForConversation(convId);
+  }
+
   async updateMessageStatus(
     clientMessageId: string,
     status: DecryptedMessage['status'],
-    meta?: { failureReason?: string; errorMessage?: string; retryCount?: number }
+    meta?: { failureReason?: string; errorMessage?: string; retryCount?: number; lastAttempt?: number }
   ): Promise<void> {
     const mem = this.memoryStore.messages.get(clientMessageId);
     if (mem) {

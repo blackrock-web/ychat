@@ -469,16 +469,23 @@ export const ChatProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // Initialize or restore device keys from user-scoped storage
   const initDeviceKeys = useCallback(async (devId: string, deterministicSeed?: string): Promise<DeviceKeyBundle> => {
     let keys = await clientDb.getDeviceKeys(devId);
-    if (!keys || !keys.privateKeys || !keys.publicKeys) {
-      if (deterministicSeed) {
-        keys = generateDeterministicDeviceKeys(devId, deterministicSeed, 25);
-      } else {
-        keys = generateDeviceKeys(devId, 25);
+    let needsRegen = !keys || !keys.privateKeys || !keys.publicKeys;
+
+    if (deterministicSeed) {
+      const expectedKeys = generateDeterministicDeviceKeys(devId, deterministicSeed, 25);
+      if (!keys || !keys.publicKeys || keys.publicKeys.signingKey !== expectedKeys.publicKeys.signingKey) {
+        keys = expectedKeys;
+        await clientDb.saveDeviceKeys(keys);
+        needsRegen = false;
       }
+    }
+
+    if (needsRegen) {
+      keys = generateDeviceKeys(devId, 25);
       await clientDb.saveDeviceKeys(keys);
     }
-    setDeviceKeys(keys);
-    return keys;
+    setDeviceKeys(keys!);
+    return keys!;
   }, []);
 
   // Update pending queue count

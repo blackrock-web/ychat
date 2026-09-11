@@ -30,7 +30,8 @@ export type SyncLifecyclePhase =
   | 'MESSAGE_DROPPED_INVALID_SIGNATURE'
   | 'MESSAGE_DROPPED_TAMPERED'
   | 'DELIVERY_RECEIPT'
-  | 'DELIVERY_CONFIRMED';
+  | 'DELIVERY_CONFIRMED'
+  | 'DELIVERY_FAILED';
 
 export interface SyncDiagnosticLog {
   id: string;

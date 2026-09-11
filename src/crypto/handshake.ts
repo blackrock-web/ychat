@@ -109,6 +109,11 @@ export function acceptHybridHandshake(
   const senderSignPub = base64ToBytes(handshakePacket.senderSigningKey);
   const senderDhPub = base64ToBytes(senderPublicKeys.dhKey);
 
+  // Critical check: Ensure handshake sender signing key matches verified sender device key
+  if (senderPublicKeys.signingKey && handshakePacket.senderSigningKey !== senderPublicKeys.signingKey) {
+    throw new Error('SECURITY VIOLATION: Handshake packet senderSigningKey does not match verified sender device key! Handshake rejected.');
+  }
+
   // 1. Verify ML-DSA-87 signature
   const transcript = new Uint8Array(ephDhPub.length + kemCiphertext.length);
   transcript.set(ephDhPub, 0);
@@ -124,6 +129,9 @@ export function acceptHybridHandshake(
   if (Array.isArray(oneTimePrekeys)) {
     if (handshakePacket.oneTimePrekeyId !== undefined) {
       opkPriv = oneTimePrekeys.find(p => p.id === handshakePacket.oneTimePrekeyId);
+      if (!opkPriv) {
+        throw new Error(`Cryptographic verification failure: One-time prekey ${handshakePacket.oneTimePrekeyId} not found in local store`);
+      }
     }
   } else if (oneTimePrekeys) {
     opkPriv = oneTimePrekeys;

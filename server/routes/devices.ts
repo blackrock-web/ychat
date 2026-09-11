@@ -51,6 +51,11 @@ devicesRouter.post('/register', requireAuth, (req: AuthenticatedRequest, res: Re
     return res.status(400).json({ error: 'deviceId and complete publicKeys (signingKey, dhKey, kemKey) are required' });
   }
 
+  const existingDevice = db.findDeviceById(deviceId);
+  if (existingDevice && existingDevice.userId !== userId) {
+    return res.status(403).json({ error: 'Device ID is already registered to another user account' });
+  }
+
   const device = db.registerDevice({
     id: deviceId,
     userId,
@@ -114,11 +119,15 @@ devicesRouter.get('/user/:uuid', requireAuth, (req: AuthenticatedRequest, res: R
   // If known registered user has no device yet, auto-provision a deterministic device
   if (devices.length === 0 && targetUser) {
     try {
-      const fallbackDevice = generateDeterministicDeviceKeys(
-        `dev-${targetUser.id.slice(0, 8)}-primary`,
-        `${targetUser.username}-seed-v1`,
-        25
-      );
+      const isDemoUser = ['alice', 'bob', 'charlie'].includes(targetUser.username.toLowerCase());
+      const devId = isDemoUser
+        ? `dev-${targetUser.username.toLowerCase()}-primary`
+        : `dev-${targetUser.id.slice(0, 8)}-primary`;
+      const seed = isDemoUser
+        ? `${targetUser.username.toLowerCase()}-device-seed-v1`
+        : `${targetUser.username}-seed-v1`;
+
+      const fallbackDevice = generateDeterministicDeviceKeys(devId, seed, 25);
       const created = db.registerDevice({
         id: fallbackDevice.deviceId,
         userId: targetUser.id,
